@@ -1,0 +1,8 @@
+{
+  "identifier": "default",
+  "description": "默认权限 — 允许调用自定义 Tauri 命令",
+  "windows": ["main"],
+  "permissions": [
+    "core:default"
+  ]
+}

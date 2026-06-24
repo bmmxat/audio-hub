@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Hub</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <!-- 顶部栏 -->
+    <header class="topbar">
+        <h1 class="logo">🎧 Audio Hub</h1>
+        <div class="topbar-actions">
+            <button id="theme-toggle-btn" class="btn btn-icon" title="切换浅色/暗色模式">
+                <span class="icon" id="theme-icon">🌙</span>
+            </button>
+            <button id="device-toggle-btn" class="btn btn-icon" title="音频设备">
+                <span class="icon">📋</span>
+            </button>
+            <button id="refresh-btn" class="btn btn-icon" title="刷新">
+                <span class="icon">↻</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- 设备抽屉（从右侧滑入） -->
+    <div id="device-drawer" class="device-drawer hidden">
+        <div class="drawer-header">
+            <h2>音频设备</h2>
+            <button id="drawer-close-btn" class="btn btn-icon" title="关闭">✕</button>
+        </div>
+        <div class="drawer-body" id="device-list">
+            <div class="skeleton skeleton-row"></div>
+            <div class="skeleton skeleton-row"></div>
+        </div>
+    </div>
+    <div id="drawer-overlay" class="drawer-overlay hidden"></div>
+
+    <!-- 错误横幅 -->
+    <div id="error-banner" class="error-banner hidden">
+        <span>⚠️ 加载失败</span>
+        <span id="error-msg"></span>
+        <button class="btn btn-sm" onclick="location.reload()">重试</button>
+    </div>
+
+    <!-- 主内容：应用音量 -->
+    <main class="dashboard">
+        <section class="card session-card">
+            <div class="card-header">
+                <span class="card-icon">🎚️</span>
+                <h2>应用音量</h2>
+                <span class="badge" id="session-count">—</span>
+                <div class="profile-toolbar" id="profile-toolbar">
+                    <select id="profile-select" class="profile-select" title="选择配置">
+                        <option value="">— 配置 —</option>
+                    </select>
+                    <button id="profile-save-btn" class="btn btn-sm" title="覆盖当前选中配置">💾</button>
+                    <button id="profile-new-btn" class="btn btn-sm" title="新建配置">➕</button>
+                    <button id="profile-delete-btn" class="btn btn-sm btn-danger" title="删除选中配置">🗑</button>
+                </div>
+                <span class="badge hidden-badge" id="hidden-badge" title="点击显示/隐藏">👁️ 隐藏 0</span>
+            </div>
+            <div class="card-body" id="session-list">
+                <div class="skeleton skeleton-row"></div>
+                <div class="skeleton skeleton-row"></div>
+                <div class="skeleton skeleton-row"></div>
+            </div>
+        </section>
+    </main>
+
+    <!-- 底部状态栏：默认设备 -->
+    <footer class="statusbar">
+        <div class="statusbar-left" id="statusbar-output">
+            <span class="status-icon">🔊</span>
+            <span class="status-label">输出</span>
+            <span class="status-name skeleton skeleton-text short" style="width:120px;height:14px;"></span>
+        </div>
+        <div class="statusbar-center">
+            <span id="status-text">就绪</span>
+        </div>
+        <div class="statusbar-right" id="statusbar-input">
+            <span class="status-icon">🎙️</span>
+            <span class="status-label">输入</span>
+            <span class="status-name skeleton skeleton-text short" style="width:120px;height:14px;"></span>
+        </div>
+    </footer>
+
+    <script src="js/api.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

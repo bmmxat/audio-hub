@@ -1,5 +1,7 @@
+use serde::{Deserialize, Serialize};
+
 /// 设备数据流方向。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeviceDirection {
     /// 输出设备（扬声器、耳机等）
     Output,
@@ -8,7 +10,7 @@ pub enum DeviceDirection {
 }
 
 /// 音频设备信息。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioDevice {
     /// 用户友好名称，例如 "扬声器 (EDIFIER M230)"
     pub name: String,
@@ -26,7 +28,7 @@ impl std::fmt::Display for AudioDevice {
 }
 
 /// 音频会话信息（对应 Windows 音量混合器中的每个应用条目）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioSession {
     /// 显示名称，例如 "Chrome"、"Discord"、"Steam"
     pub display_name: String,

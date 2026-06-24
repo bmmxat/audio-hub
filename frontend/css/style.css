@@ -1,0 +1,648 @@
+/* ═══════════════════════════════════════════════════════
+   Audio Hub — 双主题样式
+   ═══════════════════════════════════════════════════════ */
+
+/* ── 暗色主题（默认）────────────────────────────────── */
+:root {
+    --bg-primary: #0f0f13;
+    --bg-secondary: #16161e;
+    --bg-card: #1c1c2a;
+    --bg-hover: #25253a;
+    --border: #2a2a42;
+    --border-active: #7c3aed55;
+
+    --text-primary: #e8e8f0;
+    --text-secondary: #9494b8;
+    --text-muted: #5a5a7a;
+
+    --accent: #7c3aed;
+    --accent-glow: rgba(124, 58, 237, 0.25);
+    --accent-light: #a78bfa;
+    --success: #22c55e;
+    --danger: #ef4444;
+
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+
+    --shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+    --shadow-drawer: -8px 0 32px rgba(0, 0, 0, 0.5);
+    --overlay: rgba(0, 0, 0, 0.4);
+
+    --transition: 0.2s ease;
+    --topbar-h: 56px;
+    --statusbar-h: 44px;
+}
+
+/* ── 浅色主题 ──────────────────────────────────────── */
+:root.light {
+    --bg-primary: #f3f3f8;
+    --bg-secondary: #fafafe;
+    --bg-card: #ffffff;
+    --bg-hover: #eeeef5;
+    --border: #e0e0ea;
+    --border-active: #7c3aed33;
+
+    --text-primary: #1a1a28;
+    --text-secondary: #5c5c78;
+    --text-muted: #9999b0;
+
+    --accent: #6d28d9;
+    --accent-glow: rgba(109, 40, 217, 0.15);
+    --accent-light: #8b5cf6;
+
+    --shadow: 0 2px 16px rgba(0, 0, 0, 0.06);
+    --shadow-drawer: -4px 0 24px rgba(0, 0, 0, 0.1);
+    --overlay: rgba(0, 0, 0, 0.15);
+}
+
+/* ── 全局 ──────────────────────────────────────────── */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+    height: 100vh;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    font-size: 14px;
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    user-select: none;
+    -webkit-user-select: none;
+    transition: background var(--transition), color var(--transition);
+}
+
+body {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* ── 顶部导航 ── 融合式，无边框，同 body 背景 ────────── */
+.topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    height: var(--topbar-h);
+    background: var(--bg-primary);
+    flex-shrink: 0;
+    -webkit-app-region: drag;  /* 窗口拖拽 */
+}
+
+.logo {
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+    background: linear-gradient(135deg, var(--accent-light), var(--accent));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.topbar-actions {
+    display: flex;
+    gap: 6px;
+    -webkit-app-region: no-drag;
+}
+
+/* ── 按钮 ──────────────────────────────────────────── */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 14px;
+    transition: all var(--transition);
+}
+
+.btn-icon {
+    width: 34px;
+    height: 34px;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 16px;
+}
+
+.btn-icon:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.btn-icon:active { transform: scale(0.94); }
+
+.btn-icon.active {
+    background: var(--accent);
+    color: white;
+}
+
+.btn-icon.active:hover {
+    background: var(--accent-light);
+}
+
+.btn-sm {
+    padding: 6px 14px;
+    border-radius: var(--radius-sm);
+    background: var(--accent);
+    color: white;
+    font-size: 13px;
+}
+
+.btn-sm:hover { background: var(--accent-light); }
+
+/* ── 主内容区 ──────────────────────────────────────── */
+.dashboard {
+    flex: 1;
+    min-height: 0;
+    padding: 0 24px 16px;
+    display: flex;
+    flex-direction: column;
+}
+
+.session-card {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    box-shadow: var(--shadow);
+    transition: background var(--transition), border-color var(--transition);
+}
+
+.session-card .card-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.session-card .card-body::-webkit-scrollbar { width: 4px; }
+.session-card .card-body::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 2px;
+}
+
+/* ── 卡片头 ────────────────────────────────────────── */
+.card-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    transition: border-color var(--transition);
+}
+
+.card-icon { font-size: 18px; }
+
+.card-header h2 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    flex: 1;
+}
+
+.card-body { padding: 10px 16px; }
+
+/* ── Profile 工具栏 ────────────────────────────────── */
+.profile-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+    margin-right: 8px;
+}
+
+.profile-select {
+    font-family: inherit;
+    font-size: 12px;
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    color: var(--text-primary);
+    cursor: pointer;
+    outline: none;
+    max-width: 120px;
+    transition: border-color var(--transition);
+}
+
+.profile-select:focus {
+    border-color: var(--accent);
+}
+
+.profile-toolbar .btn-sm {
+    padding: 4px 8px;
+    font-size: 12px;
+}
+
+.btn-danger {
+    background: transparent !important;
+    color: var(--text-muted) !important;
+}
+
+.btn-danger:hover {
+    background: var(--danger) !important;
+    color: white !important;
+}
+
+/* ── 徽章 ──────────────────────────────────────────── */
+.badge {
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 10px;
+    background: var(--accent);
+    color: white;
+    font-weight: 600;
+}
+
+/* ── 会话列表项 ────────────────────────────────────── */
+.session-item {
+    display: flex;
+    align-items: center;
+    padding: 10px 14px;
+    border-radius: var(--radius-sm);
+    gap: 14px;
+    transition: background var(--transition);
+}
+
+.session-item:hover { background: var(--bg-hover); }
+
+.session-icon {
+    font-size: 22px;
+    flex-shrink: 0;
+    width: 28px;
+    text-align: center;
+}
+
+.session-name {
+    width: 180px;
+    flex-shrink: 0;
+    font-size: 14px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ── 音量滑块 ──────────────────────────────────────── */
+.volume-slider-wrapper {
+    flex: 1;
+    display: flex;
+    align-items: center;
+}
+
+input[type="range"].volume-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 6px;
+    border-radius: 3px;
+    background: linear-gradient(
+        to right,
+        var(--accent) var(--fill, 50%),
+        var(--bg-hover) var(--fill, 50%)
+    );
+    outline: none;
+    cursor: pointer;
+    transition: background var(--transition);
+}
+
+/* 滑块轨道在浅色模式下 */
+:root.light input[type="range"].volume-slider {
+    background: linear-gradient(
+        to right,
+        var(--accent) var(--fill, 50%),
+        #dddde8 var(--fill, 50%)
+    );
+}
+
+input[type="range"].volume-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--text-primary);
+    box-shadow: 0 0 10px var(--accent-glow);
+    cursor: pointer;
+    transition: transform var(--transition), background var(--transition);
+}
+
+input[type="range"].volume-slider::-webkit-slider-thumb:hover {
+    transform: scale(1.3);
+}
+
+/* ── 音量数值 ──────────────────────────────────────── */
+.volume-pct {
+    width: 44px;
+    text-align: right;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+/* ── 静音按钮 ──────────────────────────────────────── */
+.mute-btn {
+    width: 34px;
+    height: 34px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 18px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: all var(--transition);
+}
+
+.mute-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.mute-btn.muted { color: var(--danger); }
+
+/* ── 隐藏按钮 ──────────────────────────────────────── */
+.hide-btn {
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 14px;
+    cursor: pointer;
+    flex-shrink: 0;
+    opacity: 0;
+    transition: all var(--transition);
+}
+
+.session-item:hover .hide-btn { opacity: 1; }
+
+.hide-btn:hover {
+    background: var(--bg-hover);
+    color: var(--danger);
+}
+
+/* 隐藏徽章 */
+.hidden-badge {
+    background: var(--bg-hover) !important;
+    color: var(--text-secondary) !important;
+    cursor: pointer;
+    transition: all var(--transition);
+    margin-left: 4px;
+}
+
+.hidden-badge:hover {
+    background: var(--border) !important;
+}
+
+.hidden-badge.showing {
+    background: var(--accent) !important;
+    color: white !important;
+}
+
+/* 隐藏的应用条目 */
+.session-item.hidden-item {
+    opacity: 0.45;
+}
+
+.session-item.hidden-item:hover { opacity: 0.7; }
+
+/* ── PID ───────────────────────────────────────────── */
+.session-pid {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: "Cascadia Code", "Consolas", monospace;
+    flex-shrink: 0;
+    width: 65px;
+    text-align: right;
+}
+
+/* ── 设备抽屉 ──────────────────────────────────────── */
+.device-drawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: 380px;
+    height: 100vh;
+    background: var(--bg-secondary);
+    border-left: 1px solid var(--border);
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    transform: translateX(0);
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+                background var(--transition);
+    box-shadow: var(--shadow-drawer);
+}
+
+.device-drawer.hidden { transform: translateX(100%); }
+
+.drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.drawer-header h2 {
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.drawer-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 12px 16px;
+}
+
+.drawer-body::-webkit-scrollbar { width: 4px; }
+.drawer-body::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 2px;
+}
+
+.drawer-overlay {
+    position: fixed;
+    inset: 0;
+    background: var(--overlay);
+    z-index: 99;
+    opacity: 1;
+    transition: opacity 0.25s ease;
+}
+
+.drawer-overlay.hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* ── 抽屉内设备项 ──────────────────────────────────── */
+.drawer-body .device-item {
+    display: flex;
+    align-items: center;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    gap: 12px;
+    transition: background var(--transition);
+}
+
+.drawer-body .device-item:hover { background: var(--bg-hover); }
+.drawer-body .device-item.clickable { cursor: pointer; }
+.drawer-body .device-item.clickable:active { transform: scale(0.99); }
+
+.drawer-body .device-radio {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: border-color var(--transition);
+}
+
+.drawer-body .device-item.default .device-radio {
+    border-color: var(--accent);
+}
+
+.drawer-body .device-radio::after {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    opacity: 0;
+    transition: opacity var(--transition);
+}
+
+.drawer-body .device-item.default .device-radio::after { opacity: 1; }
+
+.drawer-body .device-name {
+    flex: 1;
+    font-size: 13px;
+}
+
+.drawer-body .device-default-tag {
+    font-size: 11px;
+    color: var(--accent-light);
+    font-weight: 600;
+    opacity: 0;
+    transition: opacity var(--transition);
+}
+
+.drawer-body .device-item.default .device-default-tag { opacity: 1; }
+
+.drawer-body .section-divider {
+    padding: 12px 4px 4px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-muted);
+}
+
+/* ── 骨架屏 ────────────────────────────────────────── */
+.skeleton {
+    background: linear-gradient(90deg,
+        var(--bg-card) 25%,
+        var(--bg-hover) 50%,
+        var(--bg-card) 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+    border-radius: var(--radius-sm);
+}
+
+.skeleton-text { height: 16px; margin-bottom: 8px; }
+.skeleton-text.short { width: 60%; }
+.skeleton-row { height: 44px; margin-bottom: 4px; }
+
+@keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
+/* ── 错误横幅 ──────────────────────────────────────── */
+.error-banner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 18px;
+    margin: 0 24px;
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.25);
+    border-radius: var(--radius-md);
+    color: var(--danger);
+    font-size: 13px;
+    flex-shrink: 0;
+}
+
+.error-banner.hidden { display: none; }
+#error-msg { flex: 1; color: var(--text-secondary); }
+
+/* ── 空状态 ────────────────────────────────────────── */
+.empty-state {
+    text-align: center;
+    padding: 48px 24px;
+    color: var(--text-muted);
+    font-size: 14px;
+}
+
+/* ── 底部状态栏 ── 融合式 ───────────────────────────── */
+.statusbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: var(--statusbar-h);
+    padding: 0 24px;
+    background: var(--bg-primary);
+    font-size: 12px;
+    flex-shrink: 0;
+    transition: background var(--transition);
+}
+
+.statusbar-left,
+.statusbar-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 200px;
+}
+
+.statusbar-right {
+    justify-content: flex-end;
+    text-align: right;
+}
+
+.statusbar-center {
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.status-icon { font-size: 14px; }
+
+.status-label {
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.status-name {
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 160px;
+}
+
+/* ── 隐藏 ──────────────────────────────────────────── */
+.hidden { display: none !important; }

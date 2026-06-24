@@ -7,9 +7,9 @@ use windows::{
             Com::{
                 StructuredStorage::PROPVARIANT, *,
             },
-            ProcessStatus::K32GetModuleBaseNameW,
-            Threading::{
-                OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ,
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32,
+                TH32CS_SNAPPROCESS,
             },
         },
         UI::Shell::PropertiesSystem::IPropertyStore,
@@ -61,6 +61,24 @@ fn get_default_render_device_id() -> Result<String> {
     let device = get_default_render_device()?;
     let id = unsafe { device.GetId()? };
     Ok(unsafe { id.to_string()? })
+}
+
+/// 获取默认捕获设备（麦克风）的端点 ID。
+fn get_default_capture_device_id() -> Result<String> {
+    let enumerator = create_device_enumerator()?;
+    let device = unsafe { enumerator.GetDefaultAudioEndpoint(eCapture, eConsole) }?;
+    let id = unsafe { device.GetId()? };
+    Ok(unsafe { id.to_string()? })
+}
+
+/// 根据数据流方向获取对应的默认设备 ID。
+#[allow(non_upper_case_globals)]
+fn get_default_device_id_for_flow(dataflow: EDataFlow) -> Option<String> {
+    match dataflow {
+        eRender => get_default_render_device_id().ok(),
+        eCapture => get_default_capture_device_id().ok(),
+        _ => None,
+    }
 }
 
 /// 从 `IMMDevice` 提取友好名称。
@@ -132,8 +150,8 @@ unsafe fn enumerate_devices_impl(dataflow: EDataFlow) -> Result<Vec<AudioDevice>
         with_com(|| {
             let enumerator = create_device_enumerator()?;
 
-            // 先获取默认设备 ID，用于对比
-            let default_id = get_default_render_device_id().ok();
+            // 根据数据流方向获取对应的默认设备 ID
+            let default_id = get_default_device_id_for_flow(dataflow);
 
             // 枚举指定方向的所有活跃设备
             let collection = enumerator.EnumAudioEndpoints(
@@ -170,36 +188,48 @@ unsafe fn enumerate_devices_impl(dataflow: EDataFlow) -> Result<Vec<AudioDevice>
 
 // ── 会话管理（Phase 4）───────────────────────────────────────
 
-/// 从 PID 获取进程的可执行文件名（例如 "chrome.exe"）。
+/// 从 PID 获取进程的可执行文件名（例如 "League of Legends.exe"）。
 ///
-/// 返回 `None` 如果进程无法访问（例如系统进程或权限不足）。
+/// 使用 `CreateToolhelp32Snapshot` 遍历进程快照，无需打开进程句柄——
+/// 因此对受保护进程（反作弊、管理员权限）同样有效。
 fn get_process_name(pid: u32) -> Option<String> {
     if pid == 0 {
         return None;
     }
 
     unsafe {
-        // 打开进程句柄
-        let handle = OpenProcess(
-            PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
-            false,
-            pid,
-        )
-        .ok()?;
+        // 创建系统进程快照（不需要打开目标进程句柄）
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
 
-        // 查询进程的可执行文件名
-        let mut buffer = [0u16; 260]; // MAX_PATH
-        let len = K32GetModuleBaseNameW(handle, None, &mut buffer);
+        let mut entry = PROCESSENTRY32 {
+            dwSize: std::mem::size_of::<PROCESSENTRY32>() as u32,
+            ..Default::default()
+        };
 
-        // 关闭句柄（忽略返回值，句柄关闭失败不影响后续逻辑）
-        let _ = windows::Win32::Foundation::CloseHandle(handle);
-
-        if len == 0 {
-            return None;
+        // 遍历快照，查找匹配的 PID
+        if Process32First(snapshot, &mut entry).is_ok() {
+            loop {
+                if entry.th32ProcessID == pid {
+                    // szExeFile 是 ANSI 编码的 [i8; 260]，找到 \0 截断
+                    let end = entry
+                        .szExeFile
+                        .iter()
+                        .position(|&c| c == 0)
+                        .unwrap_or(entry.szExeFile.len());
+                    let bytes: Vec<u8> =
+                        entry.szExeFile[..end].iter().map(|&c| c as u8).collect();
+                    let name = String::from_utf8_lossy(&bytes).to_string();
+                    let _ = windows::Win32::Foundation::CloseHandle(snapshot);
+                    return Some(name);
+                }
+                if Process32Next(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
         }
 
-        let wide = &buffer[..len as usize];
-        String::from_utf16(wide).ok()
+        let _ = windows::Win32::Foundation::CloseHandle(snapshot);
+        None
     }
 }
 
@@ -257,9 +287,9 @@ pub fn enumerate_sessions() -> Result<Vec<AudioSession>> {
 
                     // 获取显示名称，优先级：
                     // 1. IAudioSessionControl::GetDisplayName()
-                    // 2. 从 PID 反查进程名
+                    // 2. ToolHelp 快照反查进程名（无权限限制）
                     // 3. 系统音效特殊标记
-                    // 以上都无法获取 → 跳过（进程可能已退出，无意义）
+                    // 以上都无法获取 → 跳过
                     let raw_name = session_ctrl.GetDisplayName().ok();
                     let display_name = raw_name
                         .and_then(|pwstr| pwstr.to_string().ok())
@@ -273,7 +303,6 @@ pub fn enumerate_sessions() -> Result<Vec<AudioSession>> {
                             }
                         });
 
-                    // PID 非零但无法解析名称的会话直接跳过
                     let display_name = match display_name {
                         Some(name) => name,
                         None => continue,
@@ -307,3 +336,171 @@ pub fn enumerate_sessions() -> Result<Vec<AudioSession>> {
         })
     }
 }
+
+// ── 音量控制（Phase 5）───────────────────────────────────
+
+/// 设置指定 PID 在所有输出设备上的音量。
+///
+/// 遍历所有活跃会话，对匹配 PID 的会话调用 `ISimpleAudioVolume::SetMasterVolume`。
+/// 同一 PID 可能在多个设备上有会话——全部同步调整。
+///
+/// # 参数
+///
+/// * `pid`  - 目标进程 ID
+/// * `volume` - 音量值（0.0 ~ 1.0）
+pub fn set_session_volume(pid: u32, volume: f32) -> Result<()> {
+    let volume = volume.clamp(0.0, 1.0);
+
+    unsafe {
+        with_com(|| {
+            for_each_session_by_pid(pid, |vol| {
+                vol.SetMasterVolume(volume, std::ptr::null()).ok();
+            });
+            Ok(())
+        })
+    }
+}
+
+/// 设置指定 PID 在所有输出设备上的静音状态。
+///
+/// 遍历所有活跃会话，对匹配 PID 的会话调用 `ISimpleAudioVolume::SetMute`。
+///
+/// # 参数
+///
+/// * `pid`   - 目标进程 ID
+/// * `muted` - true=静音，false=取消静音
+pub fn set_session_mute(pid: u32, muted: bool) -> Result<()> {
+    unsafe {
+        with_com(|| {
+            for_each_session_by_pid(pid, |vol| {
+                vol.SetMute(muted, std::ptr::null()).ok();
+            });
+            Ok(())
+        })
+    }
+}
+
+/// 遍历所有输出设备上的会话，对匹配 PID 的会话执行回调。
+unsafe fn for_each_session_by_pid(target_pid: u32, mut f: impl FnMut(&ISimpleAudioVolume)) {
+    let Some(enumerator) = create_device_enumerator().ok() else {
+        return;
+    };
+
+    let Some(devices) =
+        (unsafe { enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) }).ok()
+    else {
+        return;
+    };
+
+    let Some(device_count) = (unsafe { devices.GetCount() }).ok() else {
+        return;
+    };
+
+    for di in 0..device_count {
+        let Some(device) = (unsafe { devices.Item(di) }).ok() else {
+            continue;
+        };
+
+        let Some(session_manager) =
+            (unsafe { device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) }).ok()
+        else {
+            continue;
+        };
+
+        let Some(session_enumerator) =
+            (unsafe { session_manager.GetSessionEnumerator() }).ok()
+        else {
+            continue;
+        };
+
+        let Some(count) = (unsafe { session_enumerator.GetCount() }).ok() else {
+            continue;
+        };
+
+        for si in 0..count {
+            let Some(session_ctrl) = (unsafe { session_enumerator.GetSession(si) }).ok() else {
+                continue;
+            };
+
+            let pid = session_ctrl
+                .cast::<IAudioSessionControl2>()
+                .and_then(|ctrl2| unsafe { ctrl2.GetProcessId() })
+                .unwrap_or(0);
+
+            if pid != target_pid {
+                continue;
+            }
+
+            if let Ok(vol) = session_ctrl.cast::<ISimpleAudioVolume>() {
+                f(&vol);
+            }
+        }
+    }
+}
+
+// ── 默认设备切换（Phase 5+）───────────────────────────────
+
+/// 将指定端点设置为默认设备。
+///
+/// 使用未公开的 `IPolicyConfig::SetDefaultEndpoint` API。
+/// `eConsole` 角色对应 Windows 声音设置中的"默认设备"。
+///
+/// # 参数
+///
+/// * `device_id` - WASAPI 端点 ID 字符串
+pub fn set_default_device(device_id: &str) -> Result<()> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let r = super::policy_config::set_default_endpoint(device_id);
+        CoUninitialize();
+        r
+    }
+}
+
+/// 打开 Windows 声音设置面板（`ms-settings:sound`）。
+pub fn open_sound_settings() {
+    std::process::Command::new("cmd")
+        .args(["/c", "start", "ms-settings:sound"])
+        .spawn()
+        .ok();
+}
+
+// ── Profile 应用（Phase 6）────────────────────────────────
+
+/// 将 Profile 中的音量/静音应用到当前活跃会话。
+///
+/// 匹配策略：先按 PID 精确匹配，PID 不存在时按 display_name 匹配
+///（处理应用重启后 PID 变化的情况）。
+pub fn apply_profile(profile: &super::profile::Profile) {
+    for entry in &profile.entries {
+        // 先尝试用 PID 直接匹配（最快、最精确）
+        if apply_to_pid(entry.pid, entry.volume, entry.muted) {
+            continue;
+        }
+        // PID 不存在——可能应用已重启，改用名称匹配
+        if let Some(pid) = find_pid_by_name(&entry.display_name) {
+            apply_to_pid(pid, entry.volume, entry.muted);
+        }
+    }
+}
+
+/// 设置指定 PID 的音量和静音。
+fn apply_to_pid(pid: u32, volume: f32, muted: bool) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    // 先设静音，再设音量（静音状态独立于音量值）
+    let _ = set_session_mute(pid, muted);
+    let _ = set_session_volume(pid, volume);
+    true
+}
+
+/// 在所有活跃会话中按 display_name 查找 PID。
+fn find_pid_by_name(name: &str) -> Option<u32> {
+    let sessions = enumerate_sessions().ok()?;
+    sessions
+        .iter()
+        .find(|s| s.display_name.eq_ignore_ascii_case(name))
+        .map(|s| s.pid)
+}
+
