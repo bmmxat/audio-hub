@@ -60,6 +60,24 @@ fn open_sound_settings() {
     wasapi::open_sound_settings();
 }
 
+// ── 窗口控制 ──────────────────────────────────────────
+#[tauri::command]
+fn win_minimize(window: tauri::Window) {
+    let _ = window.minimize();
+}
+#[tauri::command]
+fn win_toggle_maximize(window: tauri::Window) {
+    if window.is_maximized().unwrap_or(false) {
+        let _ = window.unmaximize();
+    } else {
+        let _ = window.maximize();
+    }
+}
+#[tauri::command]
+fn win_close(window: tauri::Window) {
+    let _ = window.close();
+}
+
 // ── Profile 命令 ─────────────────────────────────────
 // 注意：前台通过 enumerate_sessions 获取当前会话列表后，
 // 在 JS 层传递给保存命令，而非在 Rust 层重复调用。
@@ -109,6 +127,9 @@ pub fn run() {
             set_default_device,
             set_app_output_device,
             open_sound_settings,
+            win_minimize,
+            win_toggle_maximize,
+            win_close,
             save_profile,
             load_profile,
             list_profiles,

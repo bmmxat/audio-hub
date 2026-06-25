@@ -101,8 +101,30 @@ body {
 
 .topbar-actions {
     display: flex;
-    gap: 6px;
+    gap: 4px;
+    align-items: center;
     -webkit-app-region: no-drag;
+}
+
+.topbar-sep {
+    width: 1px;
+    height: 20px;
+    background: var(--border);
+    margin: 0 4px;
+}
+
+.win-ctrl {
+    width: 28px;
+    height: 28px;
+    font-size: 12px;
+    border-radius: 6px;
+}
+
+.win-ctrl:hover { background: var(--bg-hover); }
+
+.win-close:hover {
+    background: var(--danger);
+    color: white;
 }
 
 /* ── 按钮 ──────────────────────────────────────────── */
@@ -263,11 +285,12 @@ body {
 
 /* ── 会话列表项 ────────────────────────────────────── */
 .session-item {
-    display: flex;
+    display: grid;
+    grid-template-columns: 28px 180px 1fr 44px 34px 120px 28px;
     align-items: center;
     padding: 10px 14px;
     border-radius: var(--radius-sm);
-    gap: 14px;
+    gap: 10px;
     transition: background var(--transition);
 }
 
@@ -418,11 +441,14 @@ input[type="range"].volume-slider::-webkit-slider-thumb:hover {
 /* ── 自定义设备选择器 ──────────────────────────────── */
 .route-wrapper {
     position: relative;
-    flex-shrink: 0;
+    width: 120px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
 }
 
 .route-trigger {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     gap: 6px;
     padding: 4px 10px;
@@ -435,6 +461,16 @@ input[type="range"].volume-slider::-webkit-slider-thumb:hover {
     cursor: pointer;
     white-space: nowrap;
     transition: all var(--transition);
+    margin: 0 auto;
+}
+
+.route-trigger svg {
+    flex-shrink: 0;
+}
+
+.route-trigger.locked {
+    border-color: var(--accent);
+    color: var(--accent-light);
 }
 
 .route-trigger:hover {
@@ -442,10 +478,22 @@ input[type="range"].volume-slider::-webkit-slider-thumb:hover {
     color: var(--text-primary);
 }
 
+.route-trigger.locked:hover {
+    color: var(--accent);
+}
+
 .route-label {
     max-width: 80px;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.route-label-fixed {
+    font-size: 11px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+    width: 120px;
+    text-align: center;
 }
 
 .route-dropdown {
@@ -714,6 +762,65 @@ input[type="range"].volume-slider::-webkit-slider-thumb:hover {
     overflow: hidden;
     text-overflow: ellipsis;
     max-width: 160px;
+}
+
+/* ── About 弹窗 ────────────────────────────────────── */
+.about-modal {
+    position: fixed;
+    inset: 0;
+    background: var(--overlay);
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.about-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 32px 40px;
+    text-align: center;
+    box-shadow: var(--shadow);
+    max-width: 320px;
+}
+
+.about-card h2 {
+    font-size: 22px;
+    margin-bottom: 4px;
+}
+
+.about-ver {
+    color: var(--accent-light);
+    font-size: 13px;
+    margin-bottom: 8px;
+}
+
+.about-desc {
+    color: var(--text-secondary);
+    font-size: 14px;
+    margin-bottom: 16px;
+}
+
+.about-tech {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    margin-bottom: 16px;
+}
+
+.about-tech span {
+    padding: 3px 10px;
+    border-radius: 12px;
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.about-author {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin-bottom: 16px;
 }
 
 /* ── 隐藏 ──────────────────────────────────────────── */

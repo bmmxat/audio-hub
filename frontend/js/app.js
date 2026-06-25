@@ -48,6 +48,7 @@ const dom = {
 document.addEventListener('DOMContentLoaded', async () => {
     initTheme();
     initHiddenState();
+    initSessionDevices();
     await loadAllData();
     setupEventListeners();
 });
@@ -195,16 +196,17 @@ function renderSessionItem(session, isHidden) {
             </div>
             <span class="volume-pct" data-pid="${session.pid}">${volPct}%</span>
             <button class="${muteCls}" data-pid="${session.pid}">${muteSvg}</button>
+            ${session.pid === 0 ? '<span class="route-label-fixed">系统默认</span>' : `
             <div class="route-wrapper" data-pid="${session.pid}">
-                <button class="route-trigger" data-pid="${session.pid}" title="输出设备">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                <button class="route-trigger${currentDev ? ' locked' : ''}" data-pid="${session.pid}" title="输出设备${currentDev ? '（已锁定）' : ''}">
+                    ${currentDev ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/></svg>' : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>'}
                     <span class="route-label">${esc(currentDevName)}</span>
                 </button>
                 <div class="route-dropdown hidden">
                     <div class="route-option" data-device-id="" data-pid="${session.pid}">🔊 系统默认</div>
                     ${devOpts}
                 </div>
-            </div>
+            </div>`}
             <button class="hide-btn" data-pid="${session.pid}" data-action="${isHidden ? 'unhide' : 'hide'}" title="${isHidden ? '取消隐藏' : '隐藏此应用'}">${hideSvg}</button>
         </div>`;
 }
@@ -391,6 +393,24 @@ function startAutoRefresh() {
     }, 3000);
 }
 
+// ── 路由设备持久化 ───────────────────────────────────
+function initSessionDevices() {
+    try {
+        state.sessionDevices = JSON.parse(
+            localStorage.getItem('audio-hub-devices') || '{}',
+        );
+    } catch {
+        state.sessionDevices = {};
+    }
+}
+
+function saveSessionDevices() {
+    localStorage.setItem(
+        'audio-hub-devices',
+        JSON.stringify(state.sessionDevices),
+    );
+}
+
 // ── 隐藏应用 ─────────────────────────────────────────
 function initHiddenState() {
     try {
@@ -453,8 +473,32 @@ function showFallbackDialog() {
 
 // ── 事件绑定 ─────────────────────────────────────────
 function setupEventListeners() {
+    // About 弹窗
+    $('#about-btn')?.addEventListener('click', () => {
+        $('#about-modal').classList.remove('hidden');
+    });
+    $('#about-close-btn')?.addEventListener('click', () => {
+        $('#about-modal').classList.add('hidden');
+    });
+    $('#about-modal')?.addEventListener('click', (e) => {
+        if (e.target === $('#about-modal')) {
+            $('#about-modal').classList.add('hidden');
+        }
+    });
+
     // 主题切换
     dom.themeToggleBtn.addEventListener('click', toggleTheme);
+
+    // 窗口控制（走自定义 Tauri 命令）
+    $('#minimize-btn')?.addEventListener('click', () => {
+        window.__TAURI__.core.invoke('win_minimize');
+    });
+    $('#maximize-btn')?.addEventListener('click', () => {
+        window.__TAURI__.core.invoke('win_toggle_maximize');
+    });
+    $('#close-btn')?.addEventListener('click', () => {
+        window.__TAURI__.core.invoke('win_close');
+    });
 
     // 自动刷新会话列表（每 3 秒）
     startAutoRefresh();
@@ -518,13 +562,30 @@ function setupEventListeners() {
         const pid = parseInt(opt.dataset.pid, 10);
         const deviceId = opt.dataset.deviceId;
         state.sessionDevices[pid] = deviceId;
+        saveSessionDevices();
         AudioAPI.setAppOutputDevice(pid, deviceId)
             .then(() => {
-                // 更新触发按钮文字
+                // 更新触发按钮文字和锁图标
                 const wrapper = opt.closest('.route-wrapper');
                 if (wrapper) {
                     const label = wrapper.querySelector('.route-label');
+                    const trigger = wrapper.querySelector('.route-trigger');
                     if (label) label.textContent = opt.textContent.trim();
+                    if (trigger) {
+                        if (deviceId) {
+                            trigger.classList.add('locked');
+                            trigger.innerHTML = trigger.innerHTML.replace(
+                                /<svg.*?<\/svg>/,
+                                '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/></svg>',
+                            );
+                        } else {
+                            trigger.classList.remove('locked');
+                            trigger.innerHTML = trigger.innerHTML.replace(
+                                /<svg.*?<\/svg>/,
+                                '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>',
+                            );
+                        }
+                    }
                     wrapper.querySelector('.route-dropdown')?.classList.add('hidden');
                 }
             })

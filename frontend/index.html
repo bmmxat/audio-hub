@@ -11,10 +11,25 @@
     <header class="topbar">
         <h1 class="logo">🎧 Audio Hub</h1>
         <div class="topbar-actions">
+            <button id="about-btn" class="btn btn-icon" title="关于">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+                </svg>
+            </button>
             <button id="theme-toggle-btn" class="btn btn-icon" title="切换浅色/暗色模式">
                 <svg id="theme-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
                 </svg>
+            </button>
+            <span class="topbar-sep"></span>
+            <button id="minimize-btn" class="btn btn-icon win-ctrl" title="最小化">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            </button>
+            <button id="maximize-btn" class="btn btn-icon win-ctrl" title="最大化">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16"/></svg>
+            </button>
+            <button id="close-btn" class="btn btn-icon win-ctrl win-close" title="关闭">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
             </button>
         </div>
     </header>
@@ -82,6 +97,20 @@
             <span class="status-name" id="statusbar-input-name"></span>
         </div>
     </footer>
+
+    <!-- About 弹窗 -->
+    <div id="about-modal" class="about-modal hidden">
+        <div class="about-card">
+            <h2>🎧 Audio Hub</h2>
+            <p class="about-ver">v0.2</p>
+            <p class="about-desc">游戏玩家的音频控制中心</p>
+            <div class="about-tech">
+                <span>Rust</span><span>Tauri 2</span><span>WASAPI</span>
+            </div>
+            <p class="about-author">开发者：Juice & Claude</p>
+            <button id="about-close-btn" class="btn btn-sm">关闭</button>
+        </div>
+    </div>
 
     <script src="js/api.js"></script>
     <script src="js/app.js"></script>

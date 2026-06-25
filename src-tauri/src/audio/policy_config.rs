@@ -64,19 +64,28 @@ impl PolicyFactory {
         &self, pid: u32, flow: EDataFlow, role: ERole, device_id: &str,
     ) -> windows::core::Result<()> {
         use windows::Win32::System::WinRT::WindowsCreateString;
-        let formatted = format_device_id(device_id, flow);
-        let wide: Vec<u16> = formatted.encode_utf16().collect();
-        let hstring = unsafe { WindowsCreateString(Some(&wide))? };
-        // COM 方法接管 HSTRING 所有权，不要手动释放
+        // 空字符串 = 清除路由（传 null HSTRING）
+        let hstring = if device_id.is_empty() {
+            None
+        } else {
+            let formatted = format_device_id(device_id, flow);
+            let wide: Vec<u16> = formatted.encode_utf16().collect();
+            Some(unsafe { WindowsCreateString(Some(&wide))? })
+        };
+        let raw = hstring
+            .as_ref()
+            .map(|h| unsafe { core::mem::transmute_copy(h) })
+            .unwrap_or(std::ptr::null_mut());
         let hr = unsafe {
             ((**self.0).set_persisted)(
                 self.0 as *mut _ as *mut core::ffi::c_void,
-                pid, flow, role,
-                core::mem::transmute_copy(&hstring),
+                pid, flow, role, raw,
             )
         };
-        // 阻止 hstring Drop 时释放（已被 COM 接管）
-        core::mem::forget(hstring);
+        // 阻止 HSTRING Drop 时释放（已被 COM 接管）
+        if let Some(h) = hstring {
+            core::mem::forget(h);
+        }
         hr.ok()
     }
 
@@ -216,6 +225,7 @@ pub fn set_default_endpoint(device_id: &str, is_input: bool) -> windows::core::R
 
 pub fn set_app_output_device(pid: u32, device_id: &str) -> windows::core::Result<()> {
     let factory = get_factory()?;
+    // 空字符串 = 清除该 PID 的 per-app 路由（传 null HSTRING 给 SetPersistedDefaultAudioEndpoint）
     unsafe {
         factory.set_persisted_default(pid, eRender, eConsole, device_id)?;
         factory.set_persisted_default(pid, eRender, eMultimedia, device_id)?;
