@@ -11,9 +11,11 @@ const state = {
     loading: false,
     error: null,
     drawerOpen: false,
-    hiddenPids: new Set(),       // 已隐藏的 PID 集合
-    showHidden: false,           // 是否显示已隐藏应用
-    profiles: [],                // 配置名称列表
+    hiddenPids: new Set(),
+    showHidden: false,
+    profiles: [],
+    autoRefreshId: null,        // 定时刷新 ID
+    autoSaveTimer: null,        // 防抖定时器
 };
 
 // ── DOM 引用 ─────────────────────────────────────────
@@ -22,8 +24,6 @@ const $ = (sel) => document.querySelector(sel);
 const dom = {
     themeToggleBtn: $('#theme-toggle-btn'),
     themeIcon: $('#theme-icon'),
-    refreshBtn: $('#refresh-btn'),
-    deviceToggleBtn: $('#device-toggle-btn'),
     deviceDrawer: $('#device-drawer'),
     drawerOverlay: $('#drawer-overlay'),
     drawerCloseBtn: $('#drawer-close-btn'),
@@ -34,12 +34,13 @@ const dom = {
     sessionCount: $('#session-count'),
     hiddenBadge: $('#hidden-badge'),
     profileSelect: $('#profile-select'),
-    profileSaveBtn: $('#profile-save-btn'),
     profileNewBtn: $('#profile-new-btn'),
     profileDeleteBtn: $('#profile-delete-btn'),
     statusText: $('#status-text'),
     statusbarOutput: $('#statusbar-output'),
     statusbarInput: $('#statusbar-input'),
+    statusbarOutputName: $('#statusbar-output-name'),
+    statusbarInputName: $('#statusbar-input-name'),
 };
 
 // ── 生命周期 ─────────────────────────────────────────
@@ -69,6 +70,16 @@ async function loadAllData() {
         state.inputDevices = inputDevices;
         state.sessions = sessions;
         state.profiles = profiles;
+        await ensureDefaultProfile();
+        // 启动时自动应用当前选中配置，恢复上次保存的音量
+        const cp = dom.profileSelect.value;
+        if (cp) {
+            try {
+                await AudioAPI.applyProfile(cp);
+                const updated = await AudioAPI.enumerateSessions();
+                state.sessions = updated;
+            } catch { /* 静默跳过 */ }
+        }
         state.defaultOutput = outputDevices.find((d) => d.is_default) || null;
         state.defaultInput = inputDevices.find((d) => d.is_default) || null;
         state.error = null;
@@ -238,23 +249,10 @@ function renderDeviceItem(device) {
 
 // ── 底部状态栏 ───────────────────────────────────────
 function renderStatusbar() {
-    // 输出设备
-    if (state.defaultOutput) {
-        dom.statusbarOutput.querySelector('.status-name').textContent =
-            state.defaultOutput.name;
-    } else {
-        dom.statusbarOutput.querySelector('.status-name').textContent =
-            '未检测到';
-    }
-
-    // 输入设备
-    if (state.defaultInput) {
-        dom.statusbarInput.querySelector('.status-name').textContent =
-            state.defaultInput.name;
-    } else {
-        dom.statusbarInput.querySelector('.status-name').textContent =
-            '未检测到';
-    }
+    dom.statusbarOutputName.textContent =
+        state.defaultOutput?.name || '未检测到';
+    dom.statusbarInputName.textContent =
+        state.defaultInput?.name || '未检测到';
 }
 
 // ── 错误横幅 ─────────────────────────────────────────
@@ -271,12 +269,17 @@ function renderError() {
 function renderProfiles() {
     const sel = dom.profileSelect;
     const selected = sel.value;
-    sel.innerHTML = '<option value="">— 配置 —</option>';
-    for (const name of state.profiles) {
-        sel.innerHTML +=
-            `<option value="${esc(name)}"${name === selected ? ' selected' : ''}>${esc(name)}</option>`;
+    if (state.profiles.length === 0) {
+        sel.innerHTML = '<option value="">(无配置)</option>';
+    } else {
+        sel.innerHTML = state.profiles
+            .map(
+                (name) =>
+                    `<option value="${esc(name)}"${name === selected ? ' selected' : ''}>${esc(name)}</option>`,
+            )
+            .join('');
     }
-    sel.value = selected;
+    sel.value = selected || state.profiles[0] || '';
 }
 
 // ── 设备抽屉 ─────────────────────────────────────────
@@ -292,6 +295,73 @@ function closeDrawer() {
     dom.deviceDrawer.classList.add('hidden');
     dom.drawerOverlay.classList.add('hidden');
     dom.deviceToggleBtn.classList.remove('active');
+}
+
+// ── 自动保存 ─────────────────────────────────────────
+function triggerAutoSave() {
+    const name = dom.profileSelect.value;
+    if (!name) return;
+
+    const snapshot = state.sessions.map((s) => ({ ...s }));
+
+    if (state.autoSaveTimer) clearTimeout(state.autoSaveTimer);
+    state.autoSaveTimer = setTimeout(async () => {
+        try {
+            await AudioAPI.saveProfile(name, snapshot);
+            setStatus(`已保存至「${name}」`);
+        } catch {
+            // 静默失败，不影响用户体验
+        }
+    }, 500);
+}
+
+// 确保"默认配置"始终存在
+async function ensureDefaultProfile() {
+    // 仅在没有任何配置时创建初始默认配置
+    if (state.profiles.length === 0) {
+        const DEFAULT = '默认配置';
+        try {
+            await AudioAPI.saveProfile(DEFAULT, state.sessions);
+            state.profiles = await AudioAPI.listProfiles();
+        } catch {
+            // 静默失败
+        }
+    }
+}
+
+// ── 自动刷新 ─────────────────────────────────────────
+function startAutoRefresh() {
+    state.autoRefreshId = setInterval(async () => {
+        if (state.loading) return;
+        try {
+            const sessions = await AudioAPI.enumerateSessions();
+
+            // 检测新出现的进程，应用已保存的音量
+            const knownPids = new Set(state.sessions.map((s) => s.pid));
+            const newPids = sessions
+                .filter((s) => !knownPids.has(s.pid))
+                .map((s) => s.pid);
+
+            if (newPids.length > 0) {
+                const cp = dom.profileSelect.value;
+                if (cp) {
+                    // 只对新 PID 应用当前配置
+                    await AudioAPI.applyProfile(cp);
+                    // 重新读取以获取应用后的实际音量
+                    const updated = await AudioAPI.enumerateSessions();
+                    state.sessions = updated;
+                } else {
+                    state.sessions = sessions;
+                }
+            } else {
+                state.sessions = sessions;
+            }
+
+            renderSessionList();
+        } catch {
+            // 静默失败，下次重试
+        }
+    }, 3000);
 }
 
 // ── 隐藏应用 ─────────────────────────────────────────
@@ -353,24 +423,16 @@ function setupEventListeners() {
     // 主题切换
     dom.themeToggleBtn.addEventListener('click', toggleTheme);
 
-    // 刷新
-    dom.refreshBtn.addEventListener('click', async () => {
-        await loadAllData();
-    });
+    // 自动刷新会话列表（每 3 秒）
+    startAutoRefresh();
 
-    // 设备抽屉开关
-    dom.deviceToggleBtn.addEventListener('click', () => {
-        if (state.drawerOpen) {
-            closeDrawer();
-        } else {
-            openDrawer();
-        }
-    });
+    // 底部默认设备点击 → 打开设备抽屉
+    dom.statusbarOutput.addEventListener('click', openDrawer);
+    dom.statusbarInput.addEventListener('click', openDrawer);
 
+    // 设备抽屉关门
     dom.drawerCloseBtn.addEventListener('click', closeDrawer);
     dom.drawerOverlay.addEventListener('click', closeDrawer);
-
-    // ESC 关闭抽屉
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && state.drawerOpen) {
             closeDrawer();
@@ -421,27 +483,14 @@ function setupEventListeners() {
         renderSessionList();
     });
 
-    // Profile 覆盖保存（仅当选中已有配置时可用）
-    dom.profileSaveBtn.addEventListener('click', async () => {
-        const name = dom.profileSelect.value;
-        if (!name) {
-            setStatus('请先选择一个配置');
-            return;
-        }
-        if (!confirm(`覆盖「${name}」的当前设置？`)) return;
-        try {
-            await AudioAPI.saveProfile(name, state.sessions);
-            setStatus(`已覆盖「${name}」`);
-        } catch (err) {
-            console.error('保存配置失败：', err);
-            setStatus('保存失败');
-        }
-    });
-
-    // Profile 新建
+    // Profile 新建（不允许重名）
     dom.profileNewBtn.addEventListener('click', async () => {
         const name = prompt('输入配置名称（例如"游戏模式"）：');
         if (!name || !name.trim()) return;
+        if (state.profiles.includes(name.trim())) {
+            setStatus(`配置「${name.trim()}」已存在`);
+            return;
+        }
         try {
             await AudioAPI.saveProfile(name.trim(), state.sessions);
             state.profiles = await AudioAPI.listProfiles();
@@ -468,15 +517,32 @@ function setupEventListeners() {
         }
     });
 
-    // Profile 删除
+    // Profile 删除（仅剩一个时不可删除）
     dom.profileDeleteBtn.addEventListener('click', async () => {
         const name = dom.profileSelect.value;
         if (!name) return;
+        if (state.profiles.length <= 1) {
+            setStatus('最后一个配置不可删除');
+            return;
+        }
         if (!confirm(`确定删除配置「${name}」？`)) return;
         try {
             await AudioAPI.deleteProfile(name);
             state.profiles = await AudioAPI.listProfiles();
+            // 删除后自动选中第一个配置
+            if (dom.profileSelect.value !== name) {
+                // 删的不是当前选中，保持原样
+            }
             renderProfiles();
+            // 删的是当前选中，切换至第一个可用配置
+            if (dom.profileSelect.value === '') {
+                const first = state.profiles[0];
+                if (first) {
+                    dom.profileSelect.value = first;
+                    await AudioAPI.applyProfile(first);
+                    await loadAllData();
+                }
+            }
             setStatus(`已删除「${name}」`);
         } catch (err) {
             console.error('删除配置失败：', err);
@@ -539,6 +605,7 @@ function updateLocalVolume(pid, volume) {
             session.muted = false;
             AudioAPI.setSessionMute(pid, false).catch(() => {});
         }
+        triggerAutoSave();
     }
     const pct = Math.round(volume * 100);
     dom.sessionList.querySelectorAll(`[data-pid="${pid}"]`).forEach((el) => {
@@ -564,6 +631,7 @@ function updateLocalVolume(pid, volume) {
 function updateLocalMute(pid, muted) {
     const session = state.sessions.find((s) => s.pid === pid);
     if (session) session.muted = muted;
+    triggerAutoSave();
     dom.sessionList.querySelectorAll(`[data-pid="${pid}"]`).forEach((el) => {
         if (el.classList.contains('mute-btn')) {
             if (muted) {

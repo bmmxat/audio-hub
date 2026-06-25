@@ -14,12 +14,6 @@
             <button id="theme-toggle-btn" class="btn btn-icon" title="切换浅色/暗色模式">
                 <span class="icon" id="theme-icon">🌙</span>
             </button>
-            <button id="device-toggle-btn" class="btn btn-icon" title="音频设备">
-                <span class="icon">📋</span>
-            </button>
-            <button id="refresh-btn" class="btn btn-icon" title="刷新">
-                <span class="icon">↻</span>
-            </button>
         </div>
     </header>
 
@@ -52,9 +46,7 @@
                 <span class="badge" id="session-count">—</span>
                 <div class="profile-toolbar" id="profile-toolbar">
                     <select id="profile-select" class="profile-select" title="选择配置">
-                        <option value="">— 配置 —</option>
                     </select>
-                    <button id="profile-save-btn" class="btn btn-sm" title="覆盖当前选中配置">💾</button>
                     <button id="profile-new-btn" class="btn btn-sm" title="新建配置">➕</button>
                     <button id="profile-delete-btn" class="btn btn-sm btn-danger" title="删除选中配置">🗑</button>
                 </div>
@@ -70,18 +62,18 @@
 
     <!-- 底部状态栏：默认设备 -->
     <footer class="statusbar">
-        <div class="statusbar-left" id="statusbar-output">
+        <div class="statusbar-left" id="statusbar-output" title="点击查看所有设备">
             <span class="status-icon">🔊</span>
             <span class="status-label">输出</span>
-            <span class="status-name skeleton skeleton-text short" style="width:120px;height:14px;"></span>
+            <span class="status-name" id="statusbar-output-name"></span>
         </div>
         <div class="statusbar-center">
             <span id="status-text">就绪</span>
         </div>
-        <div class="statusbar-right" id="statusbar-input">
+        <div class="statusbar-right" id="statusbar-input" title="点击查看所有设备">
             <span class="status-icon">🎙️</span>
             <span class="status-label">输入</span>
-            <span class="status-name skeleton skeleton-text short" style="width:120px;height:14px;"></span>
+            <span class="status-name" id="statusbar-input-name"></span>
         </div>
     </footer>
 

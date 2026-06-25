@@ -241,13 +241,12 @@ body {
 }
 
 .btn-danger {
-    background: transparent !important;
-    color: var(--text-muted) !important;
+    background: var(--danger) !important;
+    color: white !important;
 }
 
 .btn-danger:hover {
-    background: var(--danger) !important;
-    color: white !important;
+    background: #dc2626 !important;
 }
 
 /* ── 徽章 ──────────────────────────────────────────── */
@@ -617,6 +616,15 @@ input[type="range"].volume-slider::-webkit-slider-thumb:hover {
     align-items: center;
     gap: 6px;
     min-width: 200px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+    transition: background var(--transition);
+}
+
+.statusbar-left:hover,
+.statusbar-right:hover {
+    background: var(--bg-hover);
 }
 
 .statusbar-right {
