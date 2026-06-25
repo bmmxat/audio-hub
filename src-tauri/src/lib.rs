@@ -48,6 +48,12 @@ fn set_default_device(device_id: String) -> Result<(), String> {
     wasapi::set_default_device(&device_id).map_err(|e| format!("{:?}", e))
 }
 
+/// 设置应用输出设备（per-app 路由）。
+#[tauri::command]
+fn set_app_output_device(pid: u32, device_id: String) -> Result<(), String> {
+    wasapi::set_app_output_device(pid, &device_id).map_err(|e| format!("{:?}", e))
+}
+
 /// 打开 Windows 声音设置面板（降级方案）。
 #[tauri::command]
 fn open_sound_settings() {
@@ -101,6 +107,7 @@ pub fn run() {
             set_session_volume,
             set_session_mute,
             set_default_device,
+            set_app_output_device,
             open_sound_settings,
             save_profile,
             load_profile,

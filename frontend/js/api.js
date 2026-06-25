@@ -48,6 +48,14 @@ window.AudioAPI = {
         });
     },
 
+    /** Per-app 路由：设置应用输出设备 */
+    async setAppOutputDevice(pid, deviceId) {
+        return await window.__TAURI__.core.invoke('set_app_output_device', {
+            pid: pid,
+            deviceId: deviceId,
+        });
+    },
+
     /** 打开 Windows 声音设置面板（降级方案） */
     async openSoundSettings() {
         return await window.__TAURI__.core.invoke('open_sound_settings');

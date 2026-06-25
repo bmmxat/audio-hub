@@ -440,18 +440,23 @@ unsafe fn for_each_session_by_pid(target_pid: u32, mut f: impl FnMut(&ISimpleAud
 
 // ── 默认设备切换（Phase 5+）───────────────────────────────
 
-/// 将指定端点设置为默认设备。
-///
-/// 使用未公开的 `IPolicyConfig::SetDefaultEndpoint` API。
-/// `eConsole` 角色对应 Windows 声音设置中的"默认设备"。
-///
-/// # 参数
-///
-/// * `device_id` - WASAPI 端点 ID 字符串
+/// 将指定端点设置为默认设备（自动判断输出/输入方向）。
 pub fn set_default_device(device_id: &str) -> Result<()> {
+    // 从设备 ID 判断方向：{0.0.0.xxx} 开头的是输出，{0.0.1.xxx} 是输入
+    let is_input = device_id.contains("{0.0.1.");
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        let r = super::policy_config::set_default_endpoint(device_id);
+        let r = super::policy_config::set_default_endpoint(device_id, is_input);
+        CoUninitialize();
+        r
+    }
+}
+
+/// 设置特定应用的输出设备（per-app 路由，Win10 1803+）。
+pub fn set_app_output_device(pid: u32, device_id: &str) -> Result<()> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let r = super::policy_config::set_app_output_device(pid, device_id);
         CoUninitialize();
         r
     }

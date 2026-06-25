@@ -14,8 +14,9 @@ const state = {
     hiddenPids: new Set(),
     showHidden: false,
     profiles: [],
-    autoRefreshId: null,        // 定时刷新 ID
-    autoSaveTimer: null,        // 防抖定时器
+    autoRefreshId: null,
+    autoSaveTimer: null,
+    sessionDevices: {},         // PID → deviceId 映射
 };
 
 // ── DOM 引用 ─────────────────────────────────────────
@@ -163,7 +164,6 @@ function renderSessionList() {
 function renderSessionItem(session, isHidden) {
     const volPct = Math.round(session.volume * 100);
     const muteCls = session.muted ? 'mute-btn muted' : 'mute-btn';
-    // SVG 静音/非静音图标
     const muteSvg = session.muted
         ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>'
         : '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>';
@@ -172,6 +172,14 @@ function renderSessionItem(session, isHidden) {
         : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
     const icon = sessionIcon(session.display_name);
     const hiddenCls = isHidden ? ' hidden-item' : '';
+    const currentDev = state.sessionDevices[session.pid] || '';
+    const currentDevName = state.outputDevices.find((d) => d.device_id === currentDev)?.name || '默认';
+    const devOpts = state.outputDevices
+        .map(
+            (d) =>
+                `<div class="route-option" data-device-id="${esc(d.device_id)}" data-pid="${session.pid}">${esc(d.name)}</div>`,
+        )
+        .join('');
 
     return `
         <div class="session-item${hiddenCls}" data-pid="${session.pid}">
@@ -187,7 +195,16 @@ function renderSessionItem(session, isHidden) {
             </div>
             <span class="volume-pct" data-pid="${session.pid}">${volPct}%</span>
             <button class="${muteCls}" data-pid="${session.pid}">${muteSvg}</button>
-            <span class="session-pid">PID ${session.pid}</span>
+            <div class="route-wrapper" data-pid="${session.pid}">
+                <button class="route-trigger" data-pid="${session.pid}" title="输出设备">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                    <span class="route-label">${esc(currentDevName)}</span>
+                </button>
+                <div class="route-dropdown hidden">
+                    <div class="route-option" data-device-id="" data-pid="${session.pid}">🔊 系统默认</div>
+                    ${devOpts}
+                </div>
+            </div>
             <button class="hide-btn" data-pid="${session.pid}" data-action="${isHidden ? 'unhide' : 'hide'}" title="${isHidden ? '取消隐藏' : '隐藏此应用'}">${hideSvg}</button>
         </div>`;
 }
@@ -341,6 +358,8 @@ async function ensureDefaultProfile() {
 function startAutoRefresh() {
     state.autoRefreshId = setInterval(async () => {
         if (state.loading) return;
+        // 路由下拉打开时不刷新，避免下拉菜单被销毁
+        if (dom.sessionList.querySelector('.route-dropdown:not(.hidden)')) return;
         try {
             const sessions = await AudioAPI.enumerateSessions();
 
@@ -476,6 +495,49 @@ function setupEventListeners() {
         });
     });
 
+    // 自定义路由下拉：点击触发按钮 → 展开/收起
+    dom.sessionList.addEventListener('click', (e) => {
+        const trigger = e.target.closest('.route-trigger');
+        if (!trigger) return;
+        e.stopPropagation();
+        const wrapper = trigger.closest('.route-wrapper');
+        if (!wrapper) return;
+        const dropdown = wrapper.querySelector('.route-dropdown');
+        // 关闭其他已展开的下拉
+        dom.sessionList
+            .querySelectorAll('.route-dropdown:not(.hidden)')
+            .forEach((d) => d.classList.add('hidden'));
+        dropdown.classList.toggle('hidden');
+    });
+
+    // 自定义路由下拉：点击选项 → 路由
+    dom.sessionList.addEventListener('click', (e) => {
+        const opt = e.target.closest('.route-option');
+        if (!opt) return;
+        e.stopPropagation();
+        const pid = parseInt(opt.dataset.pid, 10);
+        const deviceId = opt.dataset.deviceId;
+        state.sessionDevices[pid] = deviceId;
+        AudioAPI.setAppOutputDevice(pid, deviceId)
+            .then(() => {
+                // 更新触发按钮文字
+                const wrapper = opt.closest('.route-wrapper');
+                if (wrapper) {
+                    const label = wrapper.querySelector('.route-label');
+                    if (label) label.textContent = opt.textContent.trim();
+                    wrapper.querySelector('.route-dropdown')?.classList.add('hidden');
+                }
+            })
+            .catch((err) => setStatus(`路由失败: ${err}`));
+    });
+
+    // 点击页面任意位置关闭下拉
+    document.addEventListener('click', () => {
+        dom.sessionList
+            .querySelectorAll('.route-dropdown:not(.hidden)')
+            .forEach((d) => d.classList.add('hidden'));
+    });
+
     // 隐藏/取消隐藏按钮
     dom.sessionList.addEventListener('click', (e) => {
         const btn = e.target.closest('.hide-btn');
@@ -588,8 +650,11 @@ function setupEventListeners() {
         const deviceId = item.dataset.deviceId;
         if (!deviceId) return;
 
-        // 记住切换前的默认设备 ID
-        const prevDefaultId = state.defaultOutput?.device_id;
+        // 判断是输出还是输入设备
+        const isInput = deviceId.includes('{0.0.1.');
+        const prevDefaultId = isInput
+            ? state.defaultInput?.device_id
+            : state.defaultOutput?.device_id;
 
         item.style.opacity = '0.5';
         item.style.pointerEvents = 'none';
@@ -598,9 +663,10 @@ function setupEventListeners() {
             await AudioAPI.setDefaultDevice(deviceId);
             await loadAllData();
 
-            // 验证是否真的切换了
-            if (state.defaultOutput?.device_id === prevDefaultId) {
-                // 没变化——Win11 锁死了 API
+            const newId = isInput
+                ? state.defaultInput?.device_id
+                : state.defaultOutput?.device_id;
+            if (newId === prevDefaultId && prevDefaultId) {
                 showFallbackDialog();
             }
         } catch (err) {
