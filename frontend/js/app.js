@@ -163,7 +163,13 @@ function renderSessionList() {
 function renderSessionItem(session, isHidden) {
     const volPct = Math.round(session.volume * 100);
     const muteCls = session.muted ? 'mute-btn muted' : 'mute-btn';
-    const muteIcon = session.muted ? '🔇' : '🔊';
+    // SVG 静音/非静音图标
+    const muteSvg = session.muted
+        ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>'
+        : '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>';
+    const hideSvg = isHidden
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>'
+        : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
     const icon = sessionIcon(session.display_name);
     const hiddenCls = isHidden ? ' hidden-item' : '';
 
@@ -180,9 +186,9 @@ function renderSessionItem(session, isHidden) {
                        data-pid="${session.pid}">
             </div>
             <span class="volume-pct" data-pid="${session.pid}">${volPct}%</span>
-            <button class="${muteCls}" data-pid="${session.pid}">${muteIcon}</button>
+            <button class="${muteCls}" data-pid="${session.pid}">${muteSvg}</button>
             <span class="session-pid">PID ${session.pid}</span>
-            <button class="hide-btn" data-pid="${session.pid}" data-action="${isHidden ? 'unhide' : 'hide'}" title="${isHidden ? '取消隐藏' : '隐藏此应用'}">${isHidden ? '↩' : '×'}</button>
+            <button class="hide-btn" data-pid="${session.pid}" data-action="${isHidden ? 'unhide' : 'hide'}" title="${isHidden ? '取消隐藏' : '隐藏此应用'}">${hideSvg}</button>
         </div>`;
 }
 
@@ -268,7 +274,9 @@ function renderError() {
 // ── Profile 渲染 ─────────────────────────────────────
 function renderProfiles() {
     const sel = dom.profileSelect;
-    const selected = sel.value;
+    // 优先用 localStorage 记住的上次配置，否则选第一个
+    const lastProfile = localStorage.getItem('audio-hub-profile');
+    const selected = sel.value || lastProfile || state.profiles[0] || '';
     if (state.profiles.length === 0) {
         sel.innerHTML = '<option value="">(无配置)</option>';
     } else {
@@ -279,7 +287,7 @@ function renderProfiles() {
             )
             .join('');
     }
-    sel.value = selected || state.profiles[0] || '';
+    sel.value = state.profiles.includes(selected) ? selected : state.profiles[0] || '';
 }
 
 // ── 设备抽屉 ─────────────────────────────────────────
@@ -398,15 +406,21 @@ function initTheme() {
     const saved = localStorage.getItem('audio-hub-theme');
     if (saved === 'light') {
         document.documentElement.classList.add('light');
-        dom.themeIcon.textContent = '☀️';
+        updateThemeIcon(true);
     }
 }
 
 function toggleTheme() {
     const root = document.documentElement;
     const isLight = root.classList.toggle('light');
-    dom.themeIcon.textContent = isLight ? '☀️' : '🌙';
+    updateThemeIcon(isLight);
     localStorage.setItem('audio-hub-theme', isLight ? 'light' : 'dark');
+}
+
+function updateThemeIcon(isLight) {
+    dom.themeIcon.innerHTML = isLight
+        ? '<circle cx="12" cy="12" r="5" fill="currentColor" stroke="none"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>'
+        : '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';
 }
 
 // ── 降级对话框（Win11 API 受限时）─────────────────────
@@ -503,10 +517,11 @@ function setupEventListeners() {
         }
     });
 
-    // Profile 选择即切换
+    // Profile 选择即切换（记住上次选择）
     dom.profileSelect.addEventListener('change', async () => {
         const name = dom.profileSelect.value;
         if (!name) return;
+        localStorage.setItem('audio-hub-profile', name);
         try {
             await AudioAPI.applyProfile(name);
             await loadAllData();
@@ -619,10 +634,10 @@ function updateLocalVolume(pid, volume) {
         if (el.classList.contains('mute-btn')) {
             if (volume === 0) {
                 el.classList.add('muted');
-                el.textContent = '🔇';
+                el.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>';
             } else {
                 el.classList.remove('muted');
-                el.textContent = '🔊';
+                el.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>';
             }
         }
     });
@@ -636,10 +651,10 @@ function updateLocalMute(pid, muted) {
         if (el.classList.contains('mute-btn')) {
             if (muted) {
                 el.classList.add('muted');
-                el.textContent = '🔇';
+                el.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>';
             } else {
                 el.classList.remove('muted');
-                el.textContent = '🔊';
+                el.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>';
             }
         }
     });

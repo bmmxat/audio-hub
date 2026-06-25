@@ -4,6 +4,14 @@
 
 # Audio Hub 项目上下文
 
+## 开发运行
+
+```bash
+npx tauri dev    # 必须用这个！热重载前端，免 WebView2 缓存问题
+```
+
+不用 `cargo run` 或直接双击 exe——后者会被 WebView2 缓存旧版 JS/CSS。
+
 ## 定位
 Windows 专用轻量级音频管理工具，类似 VoiceMeeter 简化版，面向普通游戏玩家。
 - 不实现虚拟声卡、ASIO、复杂音频路由
