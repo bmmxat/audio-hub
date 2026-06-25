@@ -98,3 +98,34 @@ WebView2 的滚轮事件传递不可靠，CSS `overflow-y: auto` + `min-height: 
 - 隐藏列表持久化：`localStorage` key `audio-hub-hidden`
 - 主题持久化：`localStorage` key `audio-hub-theme`
 - 设备抽屉：右侧滑出 380px，ESC / 点击遮罩关闭
+
+## v0.2 新增（2026-06-25）
+
+### 默认设备切换
+- `IPolicyConfigWin7` COM 接口，vtable **12 方法**（对齐 EarTrumpet 源码）
+- CLSID: `870AF99C-171D-4F9E-AF0D-E63DF40C2BC9`
+- IID: `F8679F50-850A-41CF-9C72-430F290290C8`
+- 关键：8 个 Unused 方法 + GetPropertyValue + SetPropertyValue + SetDefaultEndpoint + SetEndpointVisibility = 12
+- 输出/输入方向自动检测（device ID 含 `{0.0.1.` 为输入）
+- 不再弹出 Win11 降级弹窗
+
+### Per-app 音频路由
+- `RoGetActivationFactory("Windows.Media.Internal.AudioPolicyConfig")`
+- IID: `ab3d4648-e242-459f-b02f-541c70306324` (21H2+, IInspectable-based, 27 槽 vtable)
+- `SetPersistedDefaultAudioEndpoint(pid, flow, role, HSTRING)`
+- HSTRING 创建用 `WindowsCreateString`，COM 接管所有权（`forget`）
+- 设备 ID 格式化：`\?\SWD#MMDEVAPI#{id}#{interface GUID}`
+- 空设备 ID = 传 null HSTRING = 清除单个 PID 的路由
+
+### 无边框窗口
+- `tauri.conf.json`: `decorations: false`
+- 自定义最小化/最大化/关闭按钮
+- Rust 端 `win_minimize` / `win_toggle_maximize` / `win_close` 命令
+- 顶栏 CSS `-webkit-app-region: drag` 可拖拽
+
+### 前端
+- CSS Grid `grid-template-columns: 28px 180px 1fr 44px 34px 120px 28px` 精确对齐
+- 路由按钮固定 120px 列宽，`margin: 0 auto` 居中
+- 路由锁定/默认双状态图标（🔒锁 / 显示器）
+- 路由下拉打开时暂停自动刷新
+- About 弹窗（Juice & Claude）
