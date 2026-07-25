@@ -11,12 +11,12 @@ const state = {
     loading: false,
     error: null,
     drawerOpen: false,
-    hiddenPids: new Set(),
+    hiddenSessions: new Set(),
     showHidden: false,
     profiles: [],
     autoRefreshId: null,
     autoSaveTimer: null,
-    sessionDevices: {},         // PID → deviceId 映射
+    sessionDevices: {},         // 稳定会话标识 → deviceId 映射
 };
 
 // ── DOM 引用 ─────────────────────────────────────────
@@ -49,12 +49,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     initTheme();
     initHiddenState();
     initSessionDevices();
-    await loadAllData();
+    await loadAllData(true);
     setupEventListeners();
 });
 
 // ── 数据加载 ─────────────────────────────────────────
-async function loadAllData() {
+async function loadAllData(restoreSelectedProfile = false) {
     state.loading = true;
     state.error = null;
     setStatus('加载中…');
@@ -72,12 +72,14 @@ async function loadAllData() {
         state.inputDevices = inputDevices;
         state.sessions = sessions;
         state.profiles = profiles;
+        migrateLegacyLocalState();
         await ensureDefaultProfile();
-        // 启动时自动应用当前选中配置，恢复上次保存的音量
-        const cp = dom.profileSelect.value;
-        if (cp) {
+        renderProfiles();
+        // 仅在启动时应用上次选中的配置，普通刷新不覆盖用户刚做的调整。
+        const selectedProfile = dom.profileSelect.value;
+        if (restoreSelectedProfile && selectedProfile) {
             try {
-                await AudioAPI.applyProfile(cp);
+                await AudioAPI.applyProfile(selectedProfile);
                 const updated = await AudioAPI.enumerateSessions();
                 state.sessions = updated;
             } catch { /* 静默跳过 */ }
@@ -117,8 +119,8 @@ function renderSessionList() {
     }
 
     // 分离可见和隐藏
-    const visible = state.sessions.filter((s) => !state.hiddenPids.has(s.pid));
-    const hidden = state.sessions.filter((s) => state.hiddenPids.has(s.pid));
+    const visible = state.sessions.filter((s) => !state.hiddenSessions.has(sessionKey(s)));
+    const hidden = state.sessions.filter((s) => state.hiddenSessions.has(sessionKey(s)));
 
     dom.sessionCount.textContent = `共 ${visible.length} 个`;
 
@@ -173,19 +175,20 @@ function renderSessionItem(session, isHidden) {
         : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
     const icon = sessionIcon(session.display_name);
     const hiddenCls = isHidden ? ' hidden-item' : '';
-    const currentDev = state.sessionDevices[session.pid] || '';
+    const stableKey = sessionKey(session);
+    const currentDev = state.sessionDevices[stableKey] || '';
     const currentDevName = state.outputDevices.find((d) => d.device_id === currentDev)?.name || '默认';
     const devOpts = state.outputDevices
         .map(
             (d) =>
-                `<div class="route-option" data-device-id="${esc(d.device_id)}" data-pid="${session.pid}">${esc(d.name)}</div>`,
+                `<div class="route-option" data-device-id="${escAttr(d.device_id)}" data-session-key="${escAttr(stableKey)}" data-pid="${session.pid}">${esc(d.name)}</div>`,
         )
         .join('');
 
     return `
         <div class="session-item${hiddenCls}" data-pid="${session.pid}">
             <span class="session-icon">${icon}</span>
-            <span class="session-name" title="${esc(session.display_name)}">${esc(session.display_name)}</span>
+            <span class="session-name" title="${escAttr(session.display_name)}">${esc(session.display_name)}</span>
             <div class="volume-slider-wrapper">
                 <input type="range"
                        class="volume-slider"
@@ -203,7 +206,7 @@ function renderSessionItem(session, isHidden) {
                     <span class="route-label">${esc(currentDevName)}</span>
                 </button>
                 <div class="route-dropdown hidden">
-                    <div class="route-option" data-device-id="" data-pid="${session.pid}">🔊 系统默认</div>
+                    <div class="route-option" data-device-id="" data-session-key="${escAttr(stableKey)}" data-pid="${session.pid}">🔊 系统默认</div>
                     ${devOpts}
                 </div>
             </div>`}
@@ -264,7 +267,7 @@ function renderDeviceItem(device) {
         : '';
     return `
         <div class="${cls}"
-             data-device-id="${esc(device.device_id)}"
+             data-device-id="${escAttr(device.device_id)}"
              title="${device.is_default ? '当前默认设备' : '点击设为默认'}">
             <div class="device-radio"></div>
             <span class="device-name">${esc(device.name)}</span>
@@ -302,7 +305,7 @@ function renderProfiles() {
         sel.innerHTML = state.profiles
             .map(
                 (name) =>
-                    `<option value="${esc(name)}"${name === selected ? ' selected' : ''}>${esc(name)}</option>`,
+                    `<option value="${escAttr(name)}"${name === selected ? ' selected' : ''}>${esc(name)}</option>`,
             )
             .join('');
     }
@@ -314,14 +317,12 @@ function openDrawer() {
     state.drawerOpen = true;
     dom.deviceDrawer.classList.remove('hidden');
     dom.drawerOverlay.classList.remove('hidden');
-    dom.deviceToggleBtn.classList.add('active');
 }
 
 function closeDrawer() {
     state.drawerOpen = false;
     dom.deviceDrawer.classList.add('hidden');
     dom.drawerOverlay.classList.add('hidden');
-    dom.deviceToggleBtn.classList.remove('active');
 }
 
 // ── 自动保存 ─────────────────────────────────────────
@@ -397,7 +398,7 @@ function startAutoRefresh() {
 function initSessionDevices() {
     try {
         state.sessionDevices = JSON.parse(
-            localStorage.getItem('audio-hub-devices') || '{}',
+            localStorage.getItem('audio-hub-devices-v2') || '{}',
         );
     } catch {
         state.sessionDevices = {};
@@ -406,7 +407,7 @@ function initSessionDevices() {
 
 function saveSessionDevices() {
     localStorage.setItem(
-        'audio-hub-devices',
+        'audio-hub-devices-v2',
         JSON.stringify(state.sessionDevices),
     );
 }
@@ -414,30 +415,73 @@ function saveSessionDevices() {
 // ── 隐藏应用 ─────────────────────────────────────────
 function initHiddenState() {
     try {
-        const saved = JSON.parse(localStorage.getItem('audio-hub-hidden') || '[]');
-        state.hiddenPids = new Set(saved);
+        const saved = JSON.parse(localStorage.getItem('audio-hub-hidden-v2') || '[]');
+        state.hiddenSessions = new Set(saved);
     } catch {
-        state.hiddenPids = new Set();
+        state.hiddenSessions = new Set();
     }
 }
 
 function saveHiddenState() {
     localStorage.setItem(
-        'audio-hub-hidden',
-        JSON.stringify([...state.hiddenPids]),
+        'audio-hub-hidden-v2',
+        JSON.stringify([...state.hiddenSessions]),
     );
 }
 
+function migrateLegacyLocalState() {
+    if (localStorage.getItem('audio-hub-devices-v2') === null) {
+        try {
+            const legacyDevices = JSON.parse(
+                localStorage.getItem('audio-hub-devices') || '{}',
+            );
+            for (const session of state.sessions) {
+                const deviceId = legacyDevices[session.pid];
+                if (deviceId) {
+                    state.sessionDevices[sessionKey(session)] = deviceId;
+                }
+            }
+            saveSessionDevices();
+        } catch {
+            state.sessionDevices = {};
+        }
+    }
+
+    if (localStorage.getItem('audio-hub-hidden-v2') === null) {
+        try {
+            const legacyPids = new Set(
+                JSON.parse(localStorage.getItem('audio-hub-hidden') || '[]'),
+            );
+            state.hiddenSessions = new Set(
+                state.sessions
+                    .filter((session) => legacyPids.has(session.pid))
+                    .map(sessionKey),
+            );
+            saveHiddenState();
+        } catch {
+            state.hiddenSessions = new Set();
+        }
+    }
+}
+
 function hideSession(pid) {
-    state.hiddenPids.add(pid);
+    const session = state.sessions.find((item) => item.pid === pid);
+    if (!session) return;
+    state.hiddenSessions.add(sessionKey(session));
     saveHiddenState();
     renderSessionList();
 }
 
 function unhideSession(pid) {
-    state.hiddenPids.delete(pid);
+    const session = state.sessions.find((item) => item.pid === pid);
+    if (!session) return;
+    state.hiddenSessions.delete(sessionKey(session));
     saveHiddenState();
     renderSessionList();
+}
+
+function sessionKey(session) {
+    return session.display_name.trim().toLocaleLowerCase();
 }
 
 // ── 主题 ─────────────────────────────────────────────
@@ -561,10 +605,15 @@ function setupEventListeners() {
         e.stopPropagation();
         const pid = parseInt(opt.dataset.pid, 10);
         const deviceId = opt.dataset.deviceId;
-        state.sessionDevices[pid] = deviceId;
-        saveSessionDevices();
+        const stableKey = opt.dataset.sessionKey;
         AudioAPI.setAppOutputDevice(pid, deviceId)
             .then(() => {
+                if (deviceId) {
+                    state.sessionDevices[stableKey] = deviceId;
+                } else {
+                    delete state.sessionDevices[stableKey];
+                }
+                saveSessionDevices();
                 // 更新触发按钮文字和锁图标
                 const wrapper = opt.closest('.route-wrapper');
                 if (wrapper) {
@@ -667,19 +716,13 @@ function setupEventListeners() {
         try {
             await AudioAPI.deleteProfile(name);
             state.profiles = await AudioAPI.listProfiles();
-            // 删除后自动选中第一个配置
-            if (dom.profileSelect.value !== name) {
-                // 删的不是当前选中，保持原样
-            }
+            const nextProfile = state.profiles[0] || '';
+            localStorage.setItem('audio-hub-profile', nextProfile);
             renderProfiles();
-            // 删的是当前选中，切换至第一个可用配置
-            if (dom.profileSelect.value === '') {
-                const first = state.profiles[0];
-                if (first) {
-                    dom.profileSelect.value = first;
-                    await AudioAPI.applyProfile(first);
-                    await loadAllData();
-                }
+            if (nextProfile) {
+                dom.profileSelect.value = nextProfile;
+                await AudioAPI.applyProfile(nextProfile);
+                await loadAllData();
             }
             setStatus(`已删除「${name}」`);
         } catch (err) {
@@ -759,7 +802,7 @@ function updateLocalVolume(pid, volume) {
             el.textContent = `${pct}%`;
         }
         if (el.classList.contains('mute-btn')) {
-            if (volume === 0) {
+            if (session?.muted) {
                 el.classList.add('muted');
                 el.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>';
             } else {
@@ -795,6 +838,10 @@ function setStatus(text) {
 // ── HTML 转义 ────────────────────────────────────────
 function esc(str) {
     const div = document.createElement('div');
-    div.textContent = str;
+    div.textContent = String(str);
     return div.innerHTML;
+}
+
+function escAttr(str) {
+    return esc(str).replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 }

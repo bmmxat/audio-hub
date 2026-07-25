@@ -110,8 +110,7 @@ fn delete_profile(name: String) -> Result<(), String> {
 #[tauri::command]
 fn apply_profile(name: String) -> Result<(), String> {
     let p = profile::load(&name)?;
-    wasapi::apply_profile(&p);
-    Ok(())
+    wasapi::apply_profile(&p).map_err(|e| format!("{e:?}"))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
