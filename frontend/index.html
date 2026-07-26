@@ -112,6 +112,27 @@
         </div>
     </div>
 
+    <!-- 单应用参数 EQ -->
+    <div id="eq-modal" class="eq-modal hidden">
+        <div class="eq-card">
+            <div class="eq-header">
+                <div>
+                    <h2>参数均衡器</h2>
+                    <p id="eq-session-name">应用会话</p>
+                </div>
+                <button id="eq-close-btn" class="btn btn-icon" title="关闭">✕</button>
+            </div>
+            <div id="eq-editor" class="eq-editor"></div>
+            <p class="eq-hint">当前验证模式：EQ 会应用于该会话新录制的 WAV；不改变正常播放声音。</p>
+            <div class="eq-actions">
+                <button id="eq-reset-btn" class="btn eq-secondary-btn">恢复默认</button>
+                <div class="eq-actions-spacer"></div>
+                <button id="eq-cancel-btn" class="btn eq-secondary-btn">取消</button>
+                <button id="eq-save-btn" class="btn btn-sm">保存</button>
+            </div>
+        </div>
+    </div>
+
     <script src="js/api.js"></script>
     <script src="js/app.js"></script>
 </body>

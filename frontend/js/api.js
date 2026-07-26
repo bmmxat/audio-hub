@@ -92,6 +92,25 @@ window.AudioAPI = {
         });
     },
 
+    async getSessionEq(pid) {
+        return await window.__TAURI__.core.invoke('get_session_eq', {
+            pid: pid,
+        });
+    },
+
+    async setSessionEq(pid, config) {
+        return await window.__TAURI__.core.invoke('set_session_eq', {
+            pid: pid,
+            config: config,
+        });
+    },
+
+    async resetSessionEq(pid) {
+        return await window.__TAURI__.core.invoke('reset_session_eq', {
+            pid: pid,
+        });
+    },
+
     // ── Profile ────────────────────────────────────────
     async saveProfile(name, sessions) {
         return await window.__TAURI__.core.invoke('save_profile', {

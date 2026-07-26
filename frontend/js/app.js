@@ -32,6 +32,10 @@ const state = {
     },
     captureBusy: false,
     captureStatusTimer: null,
+    eqEnabledPids: new Set(),
+    eqEditingPid: null,
+    eqEditingConfig: null,
+    eqBusy: false,
     sessionDevices: {},         // 稳定会话标识 → deviceId 映射
 };
 
@@ -58,6 +62,13 @@ const dom = {
     statusbarInput: $('#statusbar-input'),
     statusbarOutputName: $('#statusbar-output-name'),
     statusbarInputName: $('#statusbar-input-name'),
+    eqModal: $('#eq-modal'),
+    eqSessionName: $('#eq-session-name'),
+    eqEditor: $('#eq-editor'),
+    eqCloseBtn: $('#eq-close-btn'),
+    eqCancelBtn: $('#eq-cancel-btn'),
+    eqResetBtn: $('#eq-reset-btn'),
+    eqSaveBtn: $('#eq-save-btn'),
 };
 
 // ── 生命周期 ─────────────────────────────────────────
@@ -232,6 +243,7 @@ function renderSessionItem(session, isHidden) {
     const captureSvg = isRecording
         ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>'
         : '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="6"/></svg>';
+    const eqActive = state.eqEnabledPids.has(session.pid);
 
     return `
         <div class="session-item${hiddenCls}" data-pid="${session.pid}">
@@ -258,6 +270,10 @@ function renderSessionItem(session, isHidden) {
                     ${devOpts}
                 </div>
             </div>`}
+            <button class="eq-btn${eqActive ? ' active' : ''}"
+                    data-pid="${session.pid}"
+                    title="${session.pid === 0 ? '系统声音暂不支持单独 EQ' : '设置录制验证用的参数 EQ'}"
+                    ${session.pid === 0 ? 'disabled' : ''}>EQ</button>
             <button class="capture-btn${isRecording ? ' recording' : ''}"
                     data-pid="${session.pid}"
                     title="${escAttr(captureTitle)}"
@@ -285,6 +301,117 @@ function startCaptureStatusPolling() {
             setStatus(`录制已中断: ${state.captureStatus.last_error}`);
         }
     }, 1000);
+}
+
+function defaultEqConfig() {
+    return {
+        enabled: false,
+        preamp_db: 0,
+        bands: [
+            { kind: 'low_shelf', frequency_hz: 80, gain_db: 0, q: 0.707, enabled: true },
+            { kind: 'peaking', frequency_hz: 250, gain_db: 0, q: 1, enabled: true },
+            { kind: 'peaking', frequency_hz: 1000, gain_db: 0, q: 1, enabled: true },
+            { kind: 'peaking', frequency_hz: 4000, gain_db: 0, q: 1, enabled: true },
+            { kind: 'high_shelf', frequency_hz: 12000, gain_db: 0, q: 0.707, enabled: true },
+        ],
+        limiter_enabled: true,
+    };
+}
+
+async function openEqEditor(pid) {
+    if (state.eqBusy || pid === 0) return;
+    const session = state.sessions.find((item) => item.pid === pid);
+    state.eqBusy = true;
+    setStatus('正在读取 EQ 设置…');
+    try {
+        const config = await AudioAPI.getSessionEq(pid);
+        state.eqEditingPid = pid;
+        state.eqEditingConfig = JSON.parse(JSON.stringify(config));
+        if (config.enabled) {
+            state.eqEnabledPids.add(pid);
+        } else {
+            state.eqEnabledPids.delete(pid);
+        }
+        dom.eqSessionName.textContent = session?.display_name || `PID ${pid}`;
+        renderEqEditor();
+        dom.eqModal.classList.remove('hidden');
+        setStatus('调整 EQ 后保存，新录制的 WAV 将使用这些参数');
+        renderSessionList();
+    } catch (err) {
+        setStatus(`读取 EQ 失败: ${err}`);
+    } finally {
+        state.eqBusy = false;
+    }
+}
+
+function closeEqEditor() {
+    dom.eqModal.classList.add('hidden');
+    state.eqEditingPid = null;
+    state.eqEditingConfig = null;
+}
+
+function formatEqFrequency(frequency) {
+    return frequency >= 1000
+        ? `${frequency / 1000} kHz`
+        : `${frequency} Hz`;
+}
+
+function formatEqDb(value) {
+    const numeric = Number(value);
+    return `${numeric > 0 ? '+' : ''}${numeric.toFixed(1)} dB`;
+}
+
+function renderEqEditor() {
+    const config = state.eqEditingConfig;
+    if (!config) {
+        dom.eqEditor.innerHTML = '';
+        return;
+    }
+
+    const kindLabels = {
+        low_shelf: '低频搁架',
+        peaking: '峰值',
+        high_shelf: '高频搁架',
+    };
+    const bands = config.bands.map((band, index) => `
+        <div class="eq-band-row">
+            <span class="eq-band-name">
+                ${formatEqFrequency(band.frequency_hz)}
+                <span class="eq-band-kind">${kindLabels[band.kind] || '参数段'}</span>
+            </span>
+            <input type="range" min="-12" max="12" step="0.5"
+                   value="${band.gain_db}"
+                   data-eq-band="${index}"
+                   aria-label="${formatEqFrequency(band.frequency_hz)} 增益">
+            <span class="eq-value" data-eq-band-value="${index}">${formatEqDb(band.gain_db)}</span>
+        </div>
+    `).join('');
+
+    dom.eqEditor.innerHTML = `
+        <div class="eq-master-row">
+            <label class="eq-switch">
+                <input id="eq-enabled" type="checkbox" ${config.enabled ? 'checked' : ''}>
+                <span>启用 EQ</span>
+            </label>
+            <span></span>
+            <span class="eq-value">${config.enabled ? '开启' : '旁路'}</span>
+        </div>
+        <div class="eq-master-row">
+            <span>前级增益</span>
+            <input id="eq-preamp" type="range" min="-12" max="6" step="0.5"
+                   value="${config.preamp_db}" aria-label="前级增益">
+            <span id="eq-preamp-value" class="eq-value">${formatEqDb(config.preamp_db)}</span>
+        </div>
+        <div class="eq-band-list">${bands}</div>
+        <div class="eq-master-row">
+            <label class="eq-switch">
+                <input id="eq-limiter" type="checkbox" ${config.limiter_enabled ? 'checked' : ''}>
+                <span>削波保护</span>
+            </label>
+            <span></span>
+            <span class="eq-value">-0.3 dB</span>
+        </div>
+    `;
 }
 
 function sessionIcon(name) {
@@ -718,6 +845,67 @@ function setupEventListeners() {
         }
     });
 
+    dom.eqCloseBtn.addEventListener('click', closeEqEditor);
+    dom.eqCancelBtn.addEventListener('click', closeEqEditor);
+    dom.eqModal.addEventListener('click', (e) => {
+        if (e.target === dom.eqModal) closeEqEditor();
+    });
+    dom.eqResetBtn.addEventListener('click', () => {
+        if (state.eqEditingPid === null) return;
+        state.eqEditingConfig = defaultEqConfig();
+        renderEqEditor();
+    });
+    dom.eqSaveBtn.addEventListener('click', async () => {
+        if (state.eqEditingPid === null || !state.eqEditingConfig || state.eqBusy) return;
+        const pid = state.eqEditingPid;
+        state.eqBusy = true;
+        dom.eqSaveBtn.disabled = true;
+        try {
+            const saved = await AudioAPI.setSessionEq(pid, state.eqEditingConfig);
+            if (saved.enabled) {
+                state.eqEnabledPids.add(pid);
+            } else {
+                state.eqEnabledPids.delete(pid);
+            }
+            closeEqEditor();
+            renderSessionList();
+            setStatus(saved.enabled
+                ? 'EQ 已保存，将应用于该会话的新录制'
+                : 'EQ 已关闭，后续录制将保持原始声音');
+        } catch (err) {
+            setStatus(`保存 EQ 失败: ${err}`);
+        } finally {
+            state.eqBusy = false;
+            dom.eqSaveBtn.disabled = false;
+        }
+    });
+    dom.eqEditor.addEventListener('input', (e) => {
+        const config = state.eqEditingConfig;
+        if (!config) return;
+        if (e.target.id === 'eq-enabled') {
+            config.enabled = e.target.checked;
+            renderEqEditor();
+            return;
+        }
+        if (e.target.id === 'eq-limiter') {
+            config.limiter_enabled = e.target.checked;
+            return;
+        }
+        if (e.target.id === 'eq-preamp') {
+            config.preamp_db = Number(e.target.value);
+            $('#eq-preamp-value').textContent = formatEqDb(config.preamp_db);
+            return;
+        }
+        const bandIndex = Number(e.target.dataset.eqBand);
+        if (Number.isInteger(bandIndex) && config.bands[bandIndex]) {
+            config.bands[bandIndex].gain_db = Number(e.target.value);
+            const value = dom.eqEditor.querySelector(
+                `[data-eq-band-value="${bandIndex}"]`,
+            );
+            if (value) value.textContent = formatEqDb(e.target.value);
+        }
+    });
+
     // 主题切换
     dom.themeToggleBtn.addEventListener('click', toggleTheme);
 
@@ -742,6 +930,9 @@ function setupEventListeners() {
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && state.drawerOpen) {
             closeDrawer();
+        }
+        if (e.key === 'Escape' && !dom.eqModal.classList.contains('hidden')) {
+            closeEqEditor();
         }
     });
 
@@ -769,6 +960,12 @@ function setupEventListeners() {
     });
 
     dom.sessionList.addEventListener('click', async (e) => {
+        const button = e.target.closest('.eq-btn');
+        if (!button || button.disabled) return;
+        await openEqEditor(parseInt(button.dataset.pid, 10));
+    });
+
+    dom.sessionList.addEventListener('click', async (e) => {
         const button = e.target.closest('.capture-btn');
         if (!button || button.disabled || state.captureBusy) return;
 
@@ -781,7 +978,9 @@ function setupEventListeners() {
             if (state.captureStatus.active && state.captureStatus.pid === pid) {
                 const result = await AudioAPI.stopProcessCapture();
                 state.captureStatus = await AudioAPI.processCaptureStatus();
-                setStatus(`录制完成：${Math.round(result.duration_ms / 1000)} 秒`);
+                setStatus(
+                    `录制完成：${Math.round(result.duration_ms / 1000)} 秒${result.eq_applied ? '（已应用 EQ）' : ''}`,
+                );
                 if (confirm(`录制已保存到：\n${result.output_path}\n\n是否在文件夹中显示？`)) {
                     await AudioAPI.revealCaptureFile(result.output_path);
                 }

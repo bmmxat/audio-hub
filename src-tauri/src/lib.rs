@@ -2,6 +2,7 @@ mod audio;
 
 use audio::{
     device::{AudioDevice, AudioSession, DeviceDirection},
+    eq::{SessionEqConfig, SessionEqManager},
     notifications::AudioNotificationWatcher,
     process_loopback::{
         ProcessCaptureManager, ProcessCaptureResult, ProcessCaptureStatus, ProcessLoopbackSupport,
@@ -88,13 +89,33 @@ fn start_process_capture(
     pid: u32,
     app: tauri::AppHandle,
     manager: tauri::State<'_, ProcessCaptureManager>,
+    eq_manager: tauri::State<'_, SessionEqManager>,
 ) -> Result<ProcessCaptureStatus, String> {
     let output_dir = app
         .path()
         .app_data_dir()
         .map_err(|error| format!("无法确定录制目录: {error}"))?
         .join("captures");
-    manager.start(pid, &output_dir)
+    manager.start(pid, &output_dir, eq_manager.get(pid))
+}
+
+#[tauri::command]
+fn get_session_eq(pid: u32, manager: tauri::State<'_, SessionEqManager>) -> SessionEqConfig {
+    manager.get(pid)
+}
+
+#[tauri::command]
+fn set_session_eq(
+    pid: u32,
+    config: SessionEqConfig,
+    manager: tauri::State<'_, SessionEqManager>,
+) -> Result<SessionEqConfig, String> {
+    manager.set(pid, config)
+}
+
+#[tauri::command]
+fn reset_session_eq(pid: u32, manager: tauri::State<'_, SessionEqManager>) -> SessionEqConfig {
+    manager.reset(pid)
 }
 
 #[tauri::command]
@@ -180,6 +201,7 @@ pub fn run() {
         .setup(|app| {
             app.manage(AudioNotificationWatcher::start(app.handle().clone()));
             app.manage(ProcessCaptureManager::default());
+            app.manage(SessionEqManager::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -198,6 +220,9 @@ pub fn run() {
             start_process_capture,
             stop_process_capture,
             reveal_capture_file,
+            get_session_eq,
+            set_session_eq,
+            reset_session_eq,
             win_minimize,
             win_toggle_maximize,
             win_close,
