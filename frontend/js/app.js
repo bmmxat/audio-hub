@@ -15,6 +15,11 @@ const state = {
     showHidden: false,
     profiles: [],
     autoRefreshId: null,
+    refreshing: false,
+    notificationRefreshTimer: null,
+    notificationUnlisteners: [],
+    pendingSessionRefresh: false,
+    pendingDeviceRefresh: false,
     autoSaveTimer: null,
     sessionDevices: {},         // 稳定会话标识 → deviceId 映射
 };
@@ -51,6 +56,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     initSessionDevices();
     await loadAllData(true);
     setupEventListeners();
+    const notificationsAvailable = await setupAudioNotifications();
+    startAutoRefresh(notificationsAvailable ? 30000 : 3000);
+});
+
+window.addEventListener('beforeunload', () => {
+    for (const unlisten of state.notificationUnlisteners) {
+        unlisten();
+    }
 });
 
 // ── 数据加载 ─────────────────────────────────────────
@@ -177,7 +190,9 @@ function renderSessionItem(session, isHidden) {
     const hiddenCls = isHidden ? ' hidden-item' : '';
     const stableKey = sessionKey(session);
     const currentDev = state.sessionDevices[stableKey] || '';
-    const currentDevName = state.outputDevices.find((d) => d.device_id === currentDev)?.name || '默认';
+    const currentDevName = currentDev
+        ? state.outputDevices.find((d) => d.device_id === currentDev)?.name || '设备已断开'
+        : '默认';
     const devOpts = state.outputDevices
         .map(
             (d) =>
@@ -357,41 +372,156 @@ async function ensureDefaultProfile() {
     }
 }
 
-// ── 自动刷新 ─────────────────────────────────────────
-function startAutoRefresh() {
-    state.autoRefreshId = setInterval(async () => {
-        if (state.loading) return;
-        // 路由下拉打开时不刷新，避免下拉菜单被销毁
-        if (dom.sessionList.querySelector('.route-dropdown:not(.hidden)')) return;
-        try {
-            const sessions = await AudioAPI.enumerateSessions();
+// ── Windows 通知与低频兜底刷新 ───────────────────────
+async function setupAudioNotifications() {
+    try {
+        const eventApi = window.__TAURI__.event;
+        const sessionUnlisten = await eventApi.listen(
+            'audio-sessions-changed',
+            () => scheduleAudioRefresh({ sessions: true }),
+        );
+        const devicesUnlisten = await eventApi.listen(
+            'audio-devices-changed',
+            () => scheduleAudioRefresh({ sessions: true, devices: true }),
+        );
+        state.notificationUnlisteners.push(sessionUnlisten, devicesUnlisten);
 
-            // 检测新出现的进程，应用已保存的音量
-            const knownPids = new Set(state.sessions.map((s) => s.pid));
-            const newPids = sessions
-                .filter((s) => !knownPids.has(s.pid))
-                .map((s) => s.pid);
+        const available = await AudioAPI.audioNotificationsAvailable();
+        if (available) {
+            setStatus('就绪 · 系统事件监听');
+        }
+        return available;
+    } catch (err) {
+        console.warn('系统音频通知不可用，使用轮询：', err);
+        return false;
+    }
+}
 
-            if (newPids.length > 0) {
-                const cp = dom.profileSelect.value;
-                if (cp) {
-                    // 只对新 PID 应用当前配置
-                    await AudioAPI.applyProfile(cp);
-                    // 重新读取以获取应用后的实际音量
-                    const updated = await AudioAPI.enumerateSessions();
-                    state.sessions = updated;
-                } else {
-                    state.sessions = sessions;
+function scheduleAudioRefresh({ sessions = false, devices = false }) {
+    state.pendingSessionRefresh ||= sessions;
+    state.pendingDeviceRefresh ||= devices;
+    if (state.notificationRefreshTimer) {
+        clearTimeout(state.notificationRefreshTimer);
+    }
+    state.notificationRefreshTimer = setTimeout(() => {
+        state.notificationRefreshTimer = null;
+        const refreshRequest = {
+            sessions: state.pendingSessionRefresh,
+            devices: state.pendingDeviceRefresh,
+        };
+        state.pendingSessionRefresh = false;
+        state.pendingDeviceRefresh = false;
+        refreshRuntimeState(refreshRequest);
+    }, 80);
+}
+
+function startAutoRefresh(intervalMs) {
+    if (state.autoRefreshId) clearInterval(state.autoRefreshId);
+    state.autoRefreshId = setInterval(
+        () => refreshRuntimeState({ sessions: true, devices: true }),
+        intervalMs,
+    );
+}
+
+async function refreshRuntimeState({ sessions: refreshSessions, devices: refreshDevices }) {
+    if (state.loading || state.refreshing) {
+        scheduleAudioRefresh({
+            sessions: refreshSessions,
+            devices: refreshDevices,
+        });
+        return;
+    }
+
+    state.refreshing = true;
+    const routeDropdownOpen = Boolean(
+        dom.sessionList.querySelector('.route-dropdown:not(.hidden)'),
+    );
+
+    try {
+        const [sessionsResult, outputResult, inputResult] =
+            await Promise.allSettled([
+                refreshSessions
+                    ? AudioAPI.enumerateSessions()
+                    : Promise.resolve(null),
+                refreshDevices
+                    ? AudioAPI.enumerateDevices('Output')
+                    : Promise.resolve(null),
+                refreshDevices
+                    ? AudioAPI.enumerateDevices('Input')
+                    : Promise.resolve(null),
+            ]);
+
+        let devicesChanged = false;
+        let sessionsChanged = false;
+
+        if (outputResult.status === 'fulfilled' && outputResult.value) {
+            devicesChanged =
+                devicesChanged ||
+                deviceStateSignature(state.outputDevices) !==
+                    deviceStateSignature(outputResult.value);
+            state.outputDevices = outputResult.value;
+            state.defaultOutput =
+                outputResult.value.find((device) => device.is_default) || null;
+        }
+
+        if (inputResult.status === 'fulfilled' && inputResult.value) {
+            devicesChanged =
+                devicesChanged ||
+                deviceStateSignature(state.inputDevices) !==
+                    deviceStateSignature(inputResult.value);
+            state.inputDevices = inputResult.value;
+            state.defaultInput =
+                inputResult.value.find((device) => device.is_default) || null;
+        }
+
+        if (sessionsResult.status === 'fulfilled' && sessionsResult.value) {
+            let nextSessions = sessionsResult.value;
+            const knownPids = new Set(state.sessions.map((session) => session.pid));
+            const hasNewSession = nextSessions.some(
+                (session) => !knownPids.has(session.pid),
+            );
+
+            if (hasNewSession) {
+                const selectedProfile = dom.profileSelect.value;
+                if (selectedProfile) {
+                    try {
+                        await AudioAPI.applyProfile(selectedProfile);
+                        nextSessions = await AudioAPI.enumerateSessions();
+                    } catch {
+                        // 使用本轮结果；后续事件或兜底刷新会再次同步。
+                    }
                 }
-            } else {
-                state.sessions = sessions;
             }
 
-            renderSessionList();
-        } catch {
-            // 静默失败，下次重试
+            state.sessions = nextSessions;
+            sessionsChanged = true;
         }
-    }, 3000);
+
+        if (devicesChanged) {
+            renderDeviceList();
+            renderStatusbar();
+        }
+
+        if (devicesChanged || (sessionsChanged && !routeDropdownOpen)) {
+            renderSessionList();
+        }
+    } catch {
+        // 事件刷新失败时由下一事件或低频轮询重试。
+    } finally {
+        state.refreshing = false;
+    }
+}
+
+function deviceStateSignature(devices) {
+    return JSON.stringify(
+        devices
+            .map((device) => ({
+                id: device.device_id,
+                name: device.name,
+                default: device.is_default,
+            }))
+            .sort((left, right) => left.id.localeCompare(right.id)),
+    );
 }
 
 // ── 路由设备持久化 ───────────────────────────────────
@@ -543,9 +673,6 @@ function setupEventListeners() {
     $('#close-btn')?.addEventListener('click', () => {
         window.__TAURI__.core.invoke('win_close');
     });
-
-    // 自动刷新会话列表（每 3 秒）
-    startAutoRefresh();
 
     // 底部默认设备点击 → 打开设备抽屉
     dom.statusbarOutput.addEventListener('click', openDrawer);

@@ -61,6 +61,13 @@ window.AudioAPI = {
         return await window.__TAURI__.core.invoke('open_sound_settings');
     },
 
+    /** Windows 原生音频通知监听器是否可用 */
+    async audioNotificationsAvailable() {
+        return await window.__TAURI__.core.invoke(
+            'audio_notifications_available',
+        );
+    },
+
     // ── Profile ────────────────────────────────────────
     async saveProfile(name, sessions) {
         return await window.__TAURI__.core.invoke('save_profile', {

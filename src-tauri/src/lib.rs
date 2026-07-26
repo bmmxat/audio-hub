@@ -2,9 +2,11 @@ mod audio;
 
 use audio::{
     device::{AudioDevice, AudioSession, DeviceDirection},
+    notifications::AudioNotificationWatcher,
     profile::{self, Profile},
     wasapi,
 };
+use tauri::Manager;
 
 /// 获取默认输出设备的端点 ID。
 #[tauri::command]
@@ -58,6 +60,12 @@ fn set_app_output_device(pid: u32, device_id: String) -> Result<(), String> {
 #[tauri::command]
 fn open_sound_settings() {
     wasapi::open_sound_settings();
+}
+
+/// Windows 原生音频通知是否已成功启用。
+#[tauri::command]
+fn audio_notifications_available(watcher: tauri::State<'_, AudioNotificationWatcher>) -> bool {
+    watcher.is_available()
 }
 
 // ── 窗口控制 ──────────────────────────────────────────
@@ -116,6 +124,10 @@ fn apply_profile(name: String) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            app.manage(AudioNotificationWatcher::start(app.handle().clone()));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_default_device_id,
             get_default_device_name,
@@ -126,6 +138,7 @@ pub fn run() {
             set_default_device,
             set_app_output_device,
             open_sound_settings,
+            audio_notifications_available,
             win_minimize,
             win_toggle_maximize,
             win_close,

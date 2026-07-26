@@ -348,7 +348,8 @@ pub fn set_session_volume(pid: u32, volume: f32) -> Result<()> {
     let volume = volume.clamp(0.0, 1.0);
     let affected = with_com(|| unsafe {
         for_each_session_by_pid(pid, |vol| {
-            vol.SetMasterVolume(volume, std::ptr::null()).map(|_| ())
+            vol.SetMasterVolume(volume, &super::notifications::AUDIO_HUB_EVENT_CONTEXT)
+                .map(|_| ())
         })
     })?;
     if affected == 0 {
@@ -368,7 +369,10 @@ pub fn set_session_volume(pid: u32, volume: f32) -> Result<()> {
 /// * `muted` - true=静音，false=取消静音
 pub fn set_session_mute(pid: u32, muted: bool) -> Result<()> {
     let affected = with_com(|| unsafe {
-        for_each_session_by_pid(pid, |vol| vol.SetMute(muted, std::ptr::null()).map(|_| ()))
+        for_each_session_by_pid(pid, |vol| {
+            vol.SetMute(muted, &super::notifications::AUDIO_HUB_EVENT_CONTEXT)
+                .map(|_| ())
+        })
     })?;
     if affected == 0 {
         Err(session_not_found(pid))
