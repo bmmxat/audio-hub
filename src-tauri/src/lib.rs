@@ -3,6 +3,9 @@ mod audio;
 use audio::{
     device::{AudioDevice, AudioSession, DeviceDirection},
     notifications::AudioNotificationWatcher,
+    process_loopback::{
+        ProcessCaptureManager, ProcessCaptureResult, ProcessCaptureStatus, ProcessLoopbackSupport,
+    },
     profile::{self, Profile},
     wasapi,
 };
@@ -68,6 +71,53 @@ fn audio_notifications_available(watcher: tauri::State<'_, AudioNotificationWatc
     watcher.is_available()
 }
 
+#[tauri::command]
+fn process_loopback_support() -> ProcessLoopbackSupport {
+    ProcessCaptureManager::support()
+}
+
+#[tauri::command]
+fn process_capture_status(
+    manager: tauri::State<'_, ProcessCaptureManager>,
+) -> ProcessCaptureStatus {
+    manager.status()
+}
+
+#[tauri::command]
+fn start_process_capture(
+    pid: u32,
+    app: tauri::AppHandle,
+    manager: tauri::State<'_, ProcessCaptureManager>,
+) -> Result<ProcessCaptureStatus, String> {
+    let output_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定录制目录: {error}"))?
+        .join("captures");
+    manager.start(pid, &output_dir)
+}
+
+#[tauri::command]
+fn stop_process_capture(
+    manager: tauri::State<'_, ProcessCaptureManager>,
+) -> Result<ProcessCaptureResult, String> {
+    manager.stop()
+}
+
+#[tauri::command]
+fn reveal_capture_file(path: String) -> Result<(), String> {
+    let path = std::path::PathBuf::from(path);
+    if !path.is_file() {
+        return Err("录制文件不存在".to_string());
+    }
+    std::process::Command::new("explorer.exe")
+        .arg("/select,")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法打开录制文件位置: {error}"))
+}
+
 // ── 窗口控制 ──────────────────────────────────────────
 #[tauri::command]
 fn win_minimize(window: tauri::Window) {
@@ -82,7 +132,10 @@ fn win_toggle_maximize(window: tauri::Window) {
     }
 }
 #[tauri::command]
-fn win_close(window: tauri::Window) {
+fn win_close(window: tauri::Window, capture_manager: tauri::State<'_, ProcessCaptureManager>) {
+    if capture_manager.status().active {
+        let _ = capture_manager.stop();
+    }
     let _ = window.close();
 }
 
@@ -126,6 +179,7 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             app.manage(AudioNotificationWatcher::start(app.handle().clone()));
+            app.manage(ProcessCaptureManager::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -139,6 +193,11 @@ pub fn run() {
             set_app_output_device,
             open_sound_settings,
             audio_notifications_available,
+            process_loopback_support,
+            process_capture_status,
+            start_process_capture,
+            stop_process_capture,
+            reveal_capture_file,
             win_minimize,
             win_toggle_maximize,
             win_close,

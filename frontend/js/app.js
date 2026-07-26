@@ -21,6 +21,17 @@ const state = {
     pendingSessionRefresh: false,
     pendingDeviceRefresh: false,
     autoSaveTimer: null,
+    captureStatus: {
+        supported: false,
+        windows_build: 0,
+        active: false,
+        pid: null,
+        output_path: null,
+        elapsed_ms: 0,
+        last_error: null,
+    },
+    captureBusy: false,
+    captureStatusTimer: null,
     sessionDevices: {},         // 稳定会话标识 → deviceId 映射
 };
 
@@ -55,15 +66,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     initHiddenState();
     initSessionDevices();
     await loadAllData(true);
+    await refreshCaptureStatus();
     setupEventListeners();
     const notificationsAvailable = await setupAudioNotifications();
     startAutoRefresh(notificationsAvailable ? 30000 : 3000);
+    startCaptureStatusPolling();
 });
 
 window.addEventListener('beforeunload', () => {
     for (const unlisten of state.notificationUnlisteners) {
         unlisten();
     }
+    if (state.captureStatusTimer) clearInterval(state.captureStatusTimer);
 });
 
 // ── 数据加载 ─────────────────────────────────────────
@@ -199,6 +213,25 @@ function renderSessionItem(session, isHidden) {
                 `<div class="route-option" data-device-id="${escAttr(d.device_id)}" data-session-key="${escAttr(stableKey)}" data-pid="${session.pid}">${esc(d.name)}</div>`,
         )
         .join('');
+    const isRecording =
+        state.captureStatus.active && state.captureStatus.pid === session.pid;
+    const captureDisabled =
+        session.pid === 0 ||
+        state.captureBusy ||
+        !state.captureStatus.supported ||
+        (state.captureStatus.active && !isRecording);
+    const captureTitle = session.pid === 0
+        ? '系统声音不支持按进程捕获'
+        : !state.captureStatus.supported
+            ? `需要 Windows Build 20348 或更高版本（当前 ${state.captureStatus.windows_build || '未知'}）`
+            : isRecording
+                ? '停止录制并保存 WAV'
+                : state.captureStatus.active
+                    ? '请先停止当前录制'
+                    : '录制此应用及其子进程的声音';
+    const captureSvg = isRecording
+        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>'
+        : '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="6"/></svg>';
 
     return `
         <div class="session-item${hiddenCls}" data-pid="${session.pid}">
@@ -225,8 +258,33 @@ function renderSessionItem(session, isHidden) {
                     ${devOpts}
                 </div>
             </div>`}
+            <button class="capture-btn${isRecording ? ' recording' : ''}"
+                    data-pid="${session.pid}"
+                    title="${escAttr(captureTitle)}"
+                    ${captureDisabled ? 'disabled' : ''}>${captureSvg}</button>
             <button class="hide-btn" data-pid="${session.pid}" data-action="${isHidden ? 'unhide' : 'hide'}" title="${isHidden ? '取消隐藏' : '隐藏此应用'}">${hideSvg}</button>
         </div>`;
+}
+
+async function refreshCaptureStatus() {
+    try {
+        state.captureStatus = await AudioAPI.processCaptureStatus();
+    } catch (err) {
+        console.warn('无法读取进程音频捕获状态', err);
+    }
+    renderSessionList();
+}
+
+function startCaptureStatusPolling() {
+    if (state.captureStatusTimer) clearInterval(state.captureStatusTimer);
+    state.captureStatusTimer = setInterval(async () => {
+        if (!state.captureStatus.active) return;
+        const wasActive = state.captureStatus.active;
+        await refreshCaptureStatus();
+        if (wasActive && !state.captureStatus.active && state.captureStatus.last_error) {
+            setStatus(`录制已中断: ${state.captureStatus.last_error}`);
+        }
+    }, 1000);
 }
 
 function sessionIcon(name) {
@@ -708,6 +766,36 @@ function setupEventListeners() {
         AudioAPI.setSessionVolume(pid, volume).catch(() => {
             loadAllData();
         });
+    });
+
+    dom.sessionList.addEventListener('click', async (e) => {
+        const button = e.target.closest('.capture-btn');
+        if (!button || button.disabled || state.captureBusy) return;
+
+        const pid = parseInt(button.dataset.pid, 10);
+        const session = state.sessions.find((item) => item.pid === pid);
+        state.captureBusy = true;
+        renderSessionList();
+
+        try {
+            if (state.captureStatus.active && state.captureStatus.pid === pid) {
+                const result = await AudioAPI.stopProcessCapture();
+                state.captureStatus = await AudioAPI.processCaptureStatus();
+                setStatus(`录制完成：${Math.round(result.duration_ms / 1000)} 秒`);
+                if (confirm(`录制已保存到：\n${result.output_path}\n\n是否在文件夹中显示？`)) {
+                    await AudioAPI.revealCaptureFile(result.output_path);
+                }
+            } else {
+                state.captureStatus = await AudioAPI.startProcessCapture(pid);
+                setStatus(`正在录制 ${session?.display_name || `PID ${pid}`}，再次点击红色按钮停止`);
+            }
+        } catch (err) {
+            setStatus(`录制失败: ${err}`);
+            await refreshCaptureStatus();
+        } finally {
+            state.captureBusy = false;
+            renderSessionList();
+        }
     });
 
     // 自定义路由下拉：点击触发按钮 → 展开/收起

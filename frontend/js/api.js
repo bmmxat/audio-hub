@@ -68,6 +68,30 @@ window.AudioAPI = {
         );
     },
 
+    async processLoopbackSupport() {
+        return await window.__TAURI__.core.invoke('process_loopback_support');
+    },
+
+    async processCaptureStatus() {
+        return await window.__TAURI__.core.invoke('process_capture_status');
+    },
+
+    async startProcessCapture(pid) {
+        return await window.__TAURI__.core.invoke('start_process_capture', {
+            pid: pid,
+        });
+    },
+
+    async stopProcessCapture() {
+        return await window.__TAURI__.core.invoke('stop_process_capture');
+    },
+
+    async revealCaptureFile(path) {
+        return await window.__TAURI__.core.invoke('reveal_capture_file', {
+            path: path,
+        });
+    },
+
     // ── Profile ────────────────────────────────────────
     async saveProfile(name, sessions) {
         return await window.__TAURI__.core.invoke('save_profile', {
