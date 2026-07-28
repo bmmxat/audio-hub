@@ -1,14 +1,19 @@
 mod audio;
+mod autostart;
+mod plugins;
 
 use audio::{
-    device::{AudioDevice, AudioSession, DeviceDirection},
-    eq::{SessionEqConfig, SessionEqManager},
+    device::{AudioDevice, AudioSession, DeviceDirection, DeviceVolumeState},
     notifications::AudioNotificationWatcher,
     process_loopback::{
         ProcessCaptureManager, ProcessCaptureResult, ProcessCaptureStatus, ProcessLoopbackSupport,
     },
     profile::{self, Profile},
     wasapi,
+};
+use plugins::equalizer_apo::{
+    self, EqPresetCatalog, EqualizerApoStatus, GlobalEqConfig, MicrophoneConfig,
+    MicrophoneConfigState,
 };
 use tauri::Manager;
 
@@ -48,6 +53,36 @@ fn set_session_mute(pid: u32, muted: bool) -> Result<(), String> {
     wasapi::set_session_mute(pid, muted).map_err(|e| format!("{:?}", e))
 }
 
+/// 获取指定输出或输入设备的 Windows 主音量。
+#[tauri::command]
+fn get_device_volume(device_id: String) -> Result<DeviceVolumeState, String> {
+    wasapi::get_device_volume(&device_id).map_err(|error| format!("{error:?}"))
+}
+
+/// 设置指定输出或输入设备的 Windows 主音量。
+#[tauri::command]
+fn set_device_volume(device_id: String, volume: f32) -> Result<DeviceVolumeState, String> {
+    wasapi::set_device_volume(&device_id, volume).map_err(|error| format!("{error:?}"))
+}
+
+/// 设置指定输出或输入设备的静音状态。
+#[tauri::command]
+fn set_device_mute(device_id: String, muted: bool) -> Result<DeviceVolumeState, String> {
+    wasapi::set_device_mute(&device_id, muted).map_err(|error| format!("{error:?}"))
+}
+
+/// 当前程序是否已注册为登录 Windows 后自动启动。
+#[tauri::command]
+fn get_autostart_enabled() -> Result<bool, String> {
+    autostart::is_enabled()
+}
+
+/// 启用或关闭当前用户的登录自启动。
+#[tauri::command]
+fn set_autostart_enabled(enabled: bool) -> Result<bool, String> {
+    autostart::set_enabled(enabled)
+}
+
 /// 将指定端点设置为默认设备（Win11 可能不生效）。
 #[tauri::command]
 fn set_default_device(device_id: String) -> Result<(), String> {
@@ -64,6 +99,180 @@ fn set_app_output_device(pid: u32, device_id: String) -> Result<(), String> {
 #[tauri::command]
 fn open_sound_settings() {
     wasapi::open_sound_settings();
+}
+
+#[tauri::command]
+fn equalizer_apo_status(app: tauri::AppHandle) -> Result<EqualizerApoStatus, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定插件配置目录：{error}"))?;
+    Ok(equalizer_apo::status(Some(&app_data_dir)))
+}
+
+#[tauri::command]
+fn equalizer_apo_enabled_devices(device_ids: Vec<String>) -> Vec<String> {
+    equalizer_apo::enabled_device_ids(device_ids)
+}
+
+#[tauri::command]
+fn choose_rnnoise_plugin_directory(
+    app: tauri::AppHandle,
+) -> Result<Option<EqualizerApoStatus>, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定插件配置目录：{error}"))?;
+    equalizer_apo::choose_rnnoise_plugin_directory(&app_data_dir)
+}
+
+#[tauri::command]
+fn get_global_eq(device_id: String, app: tauri::AppHandle) -> Result<GlobalEqConfig, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定插件配置目录：{error}"))?;
+    equalizer_apo::get_endpoint_eq(&app_data_dir, &device_id)
+}
+
+#[tauri::command]
+fn set_global_eq(
+    device_id: String,
+    device_name: String,
+    config: GlobalEqConfig,
+    app: tauri::AppHandle,
+) -> Result<GlobalEqConfig, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定插件配置目录：{error}"))?;
+    equalizer_apo::set_endpoint_eq(&app_data_dir, &device_id, &device_name, config)
+}
+
+#[tauri::command]
+fn get_microphone_processing(
+    device_id: String,
+    app: tauri::AppHandle,
+) -> Result<MicrophoneConfigState, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定插件配置目录：{error}"))?;
+    equalizer_apo::get_microphone_config(&app_data_dir, &device_id)
+}
+
+#[tauri::command]
+fn set_microphone_processing(
+    device_id: String,
+    device_name: String,
+    config: MicrophoneConfig,
+    app: tauri::AppHandle,
+) -> Result<MicrophoneConfig, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定插件配置目录：{error}"))?;
+    equalizer_apo::set_microphone_config(&app_data_dir, &device_id, &device_name, config)
+}
+
+#[tauri::command]
+fn list_global_eq_presets(
+    device_id: String,
+    app: tauri::AppHandle,
+) -> Result<EqPresetCatalog, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定插件配置目录：{error}"))?;
+    equalizer_apo::list_presets(&app_data_dir, &device_id)
+}
+
+#[tauri::command]
+fn get_global_eq_preset(
+    device_id: String,
+    preset_name: String,
+    app: tauri::AppHandle,
+) -> Result<GlobalEqConfig, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定插件配置目录：{error}"))?;
+    equalizer_apo::get_preset(&app_data_dir, &device_id, &preset_name)
+}
+
+#[tauri::command]
+fn save_global_eq_preset(
+    device_id: String,
+    device_name: String,
+    preset_name: String,
+    config: GlobalEqConfig,
+    app: tauri::AppHandle,
+) -> Result<GlobalEqConfig, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定插件配置目录：{error}"))?;
+    equalizer_apo::save_preset(
+        &app_data_dir,
+        &device_id,
+        &device_name,
+        &preset_name,
+        config,
+    )
+}
+
+#[tauri::command]
+fn activate_global_eq_preset(
+    device_id: String,
+    preset_name: String,
+    app: tauri::AppHandle,
+) -> Result<GlobalEqConfig, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定插件配置目录：{error}"))?;
+    equalizer_apo::activate_preset(&app_data_dir, &device_id, &preset_name)
+}
+
+#[tauri::command]
+fn delete_global_eq_preset(
+    device_id: String,
+    preset_name: String,
+    app: tauri::AppHandle,
+) -> Result<EqPresetCatalog, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定插件配置目录：{error}"))?;
+    equalizer_apo::delete_preset(&app_data_dir, &device_id, &preset_name)
+}
+
+#[tauri::command]
+fn connect_equalizer_apo(app: tauri::AppHandle) -> Result<EqualizerApoStatus, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定插件配置目录：{error}"))?;
+    equalizer_apo::connect(&app_data_dir)
+}
+
+#[tauri::command]
+fn disconnect_equalizer_apo(app: tauri::AppHandle) -> Result<EqualizerApoStatus, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定插件配置目录：{error}"))?;
+    equalizer_apo::disconnect(&app_data_dir)
+}
+
+#[tauri::command]
+fn open_equalizer_apo_download() -> Result<(), String> {
+    equalizer_apo::open_download_page()
+}
+
+#[tauri::command]
+fn open_equalizer_apo_configurator() -> Result<(), String> {
+    equalizer_apo::open_configurator()
 }
 
 /// Windows 原生音频通知是否已成功启用。
@@ -89,33 +298,13 @@ fn start_process_capture(
     pid: u32,
     app: tauri::AppHandle,
     manager: tauri::State<'_, ProcessCaptureManager>,
-    eq_manager: tauri::State<'_, SessionEqManager>,
 ) -> Result<ProcessCaptureStatus, String> {
     let output_dir = app
         .path()
         .app_data_dir()
         .map_err(|error| format!("无法确定录制目录: {error}"))?
         .join("captures");
-    manager.start(pid, &output_dir, eq_manager.get(pid))
-}
-
-#[tauri::command]
-fn get_session_eq(pid: u32, manager: tauri::State<'_, SessionEqManager>) -> SessionEqConfig {
-    manager.get(pid)
-}
-
-#[tauri::command]
-fn set_session_eq(
-    pid: u32,
-    config: SessionEqConfig,
-    manager: tauri::State<'_, SessionEqManager>,
-) -> Result<SessionEqConfig, String> {
-    manager.set(pid, config)
-}
-
-#[tauri::command]
-fn reset_session_eq(pid: u32, manager: tauri::State<'_, SessionEqManager>) -> SessionEqConfig {
-    manager.reset(pid)
+    manager.start(pid, &output_dir)
 }
 
 #[tauri::command]
@@ -201,7 +390,6 @@ pub fn run() {
         .setup(|app| {
             app.manage(AudioNotificationWatcher::start(app.handle().clone()));
             app.manage(ProcessCaptureManager::default());
-            app.manage(SessionEqManager::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -211,18 +399,36 @@ pub fn run() {
             enumerate_sessions,
             set_session_volume,
             set_session_mute,
+            get_device_volume,
+            set_device_volume,
+            set_device_mute,
+            get_autostart_enabled,
+            set_autostart_enabled,
             set_default_device,
             set_app_output_device,
             open_sound_settings,
+            equalizer_apo_status,
+            equalizer_apo_enabled_devices,
+            choose_rnnoise_plugin_directory,
+            get_global_eq,
+            set_global_eq,
+            get_microphone_processing,
+            set_microphone_processing,
+            list_global_eq_presets,
+            get_global_eq_preset,
+            save_global_eq_preset,
+            activate_global_eq_preset,
+            delete_global_eq_preset,
+            connect_equalizer_apo,
+            disconnect_equalizer_apo,
+            open_equalizer_apo_download,
+            open_equalizer_apo_configurator,
             audio_notifications_available,
             process_loopback_support,
             process_capture_status,
             start_process_capture,
             stop_process_capture,
             reveal_capture_file,
-            get_session_eq,
-            set_session_eq,
-            reset_session_eq,
             win_minimize,
             win_toggle_maximize,
             win_close,

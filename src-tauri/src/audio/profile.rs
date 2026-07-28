@@ -142,7 +142,7 @@ pub fn delete(name: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_name;
+    use super::{Profile, validate_name};
 
     #[test]
     fn accepts_normal_profile_names() {
@@ -155,5 +155,15 @@ mod tests {
         for name in ["../escape", r"..\escape", "C:\\escape", "CON", "LPT1.json"] {
             assert!(validate_name(name).is_err(), "{name} 应被拒绝");
         }
+    }
+
+    #[test]
+    fn ignores_legacy_eq_binding() {
+        let profile: Profile = serde_json::from_str(
+            r#"{"name":"旧配置","entries":[],"eq_preset":{"device_id":"old","device_name":"旧设备","preset_name":"旧音色"}}"#,
+        )
+        .unwrap();
+        assert_eq!(profile.name, "旧配置");
+        assert!(profile.entries.is_empty());
     }
 }

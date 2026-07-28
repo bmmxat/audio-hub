@@ -20,6 +20,15 @@ pub struct AudioDevice {
     pub is_default: bool,
 }
 
+/// Windows 音频端点的主音量状态。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct DeviceVolumeState {
+    /// 主音量（0.0 ~ 1.0）
+    pub volume: f32,
+    /// 端点是否静音
+    pub muted: bool,
+}
+
 impl std::fmt::Display for AudioDevice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let marker = if self.is_default { " ★" } else { "" };

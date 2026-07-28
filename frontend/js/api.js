@@ -41,6 +41,41 @@ window.AudioAPI = {
         });
     },
 
+    /** 获取输出设备或麦克风的 Windows 主音量 */
+    async getDeviceVolume(deviceId) {
+        return await window.__TAURI__.core.invoke('get_device_volume', {
+            deviceId: deviceId,
+        });
+    },
+
+    /** 设置输出设备或麦克风的 Windows 主音量 */
+    async setDeviceVolume(deviceId, volume) {
+        return await window.__TAURI__.core.invoke('set_device_volume', {
+            deviceId: deviceId,
+            volume: volume,
+        });
+    },
+
+    /** 设置输出设备或麦克风的静音状态 */
+    async setDeviceMute(deviceId, muted) {
+        return await window.__TAURI__.core.invoke('set_device_mute', {
+            deviceId: deviceId,
+            muted: muted,
+        });
+    },
+
+    /** 获取登录 Windows 后自动启动状态 */
+    async getAutostartEnabled() {
+        return await window.__TAURI__.core.invoke('get_autostart_enabled');
+    },
+
+    /** 设置登录 Windows 后自动启动 */
+    async setAutostartEnabled(enabled) {
+        return await window.__TAURI__.core.invoke('set_autostart_enabled', {
+            enabled: enabled,
+        });
+    },
+
     /** 将指定端点设为默认设备 */
     async setDefaultDevice(deviceId) {
         return await window.__TAURI__.core.invoke('set_default_device', {
@@ -92,23 +127,98 @@ window.AudioAPI = {
         });
     },
 
-    async getSessionEq(pid) {
-        return await window.__TAURI__.core.invoke('get_session_eq', {
-            pid: pid,
+    async equalizerApoStatus() {
+        return await window.__TAURI__.core.invoke('equalizer_apo_status');
+    },
+
+    async equalizerApoEnabledDevices(deviceIds) {
+        return await window.__TAURI__.core.invoke('equalizer_apo_enabled_devices', {
+            deviceIds: deviceIds,
         });
     },
 
-    async setSessionEq(pid, config) {
-        return await window.__TAURI__.core.invoke('set_session_eq', {
-            pid: pid,
+    async chooseRnnoisePluginDirectory() {
+        return await window.__TAURI__.core.invoke('choose_rnnoise_plugin_directory');
+    },
+
+    async getGlobalEq(deviceId) {
+        return await window.__TAURI__.core.invoke('get_global_eq', {
+            deviceId: deviceId,
+        });
+    },
+
+    async setGlobalEq(deviceId, deviceName, config) {
+        return await window.__TAURI__.core.invoke('set_global_eq', {
+            deviceId: deviceId,
+            deviceName: deviceName,
             config: config,
         });
     },
 
-    async resetSessionEq(pid) {
-        return await window.__TAURI__.core.invoke('reset_session_eq', {
-            pid: pid,
+    async getMicrophoneProcessing(deviceId) {
+        return await window.__TAURI__.core.invoke('get_microphone_processing', {
+            deviceId: deviceId,
         });
+    },
+
+    async setMicrophoneProcessing(deviceId, deviceName, config) {
+        return await window.__TAURI__.core.invoke('set_microphone_processing', {
+            deviceId: deviceId,
+            deviceName: deviceName,
+            config: config,
+        });
+    },
+
+    async listGlobalEqPresets(deviceId) {
+        return await window.__TAURI__.core.invoke('list_global_eq_presets', {
+            deviceId: deviceId,
+        });
+    },
+
+    async getGlobalEqPreset(deviceId, presetName) {
+        return await window.__TAURI__.core.invoke('get_global_eq_preset', {
+            deviceId: deviceId,
+            presetName: presetName,
+        });
+    },
+
+    async saveGlobalEqPreset(deviceId, deviceName, presetName, config) {
+        return await window.__TAURI__.core.invoke('save_global_eq_preset', {
+            deviceId: deviceId,
+            deviceName: deviceName,
+            presetName: presetName,
+            config: config,
+        });
+    },
+
+    async activateGlobalEqPreset(deviceId, presetName) {
+        return await window.__TAURI__.core.invoke('activate_global_eq_preset', {
+            deviceId: deviceId,
+            presetName: presetName,
+        });
+    },
+
+    async deleteGlobalEqPreset(deviceId, presetName) {
+        return await window.__TAURI__.core.invoke('delete_global_eq_preset', {
+            deviceId: deviceId,
+            presetName: presetName,
+        });
+    },
+
+    async connectEqualizerApo() {
+        return await window.__TAURI__.core.invoke('connect_equalizer_apo');
+    },
+
+    async disconnectEqualizerApo() {
+        return await window.__TAURI__.core.invoke('disconnect_equalizer_apo');
+    },
+
+    async openEqualizerApoDownload() {
+        return await window.__TAURI__.core.invoke('open_equalizer_apo_download');
+    },
+
+    async openEqualizerApoConfigurator() {
+        return await window.__TAURI__.core.invoke('open_equalizer_apo_configurator');
     },
 
     // ── Profile ────────────────────────────────────────

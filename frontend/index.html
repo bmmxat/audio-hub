@@ -60,18 +60,45 @@
             <div class="card-header">
                 <span class="card-icon">🎚️</span>
                 <h2>应用音量</h2>
-                <span class="badge" id="session-count">—</span>
-                <div class="profile-toolbar" id="profile-toolbar">
-                    <select id="profile-select" class="profile-select" title="选择配置">
-                    </select>
-                    <button id="profile-new-btn" class="btn btn-sm" title="新建配置">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                <span class="session-count-badge" id="session-count">—</span>
+                <div class="header-actions">
+                    <button id="global-eq-btn" class="btn plugin-entry-btn" title="通过 Equalizer APO 调节输出 EQ 与麦克风处理">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                            <line x1="4" y1="7" x2="20" y2="7"/>
+                            <line x1="4" y1="17" x2="20" y2="17"/>
+                            <circle cx="9" cy="7" r="2"/>
+                            <circle cx="15" cy="17" r="2"/>
+                        </svg>
+                        <span>Equalizer APO</span>
                     </button>
-                    <button id="profile-delete-btn" class="btn btn-sm btn-danger" title="删除选中配置">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
-                    </button>
+                    <span class="toolbar-divider"></span>
+                    <div class="profile-toolbar" id="profile-toolbar">
+                        <span class="scene-label">场景</span>
+                        <select id="profile-select" class="profile-select" title="选择场景">
+                        </select>
+                        <button id="profile-new-btn" class="btn toolbar-icon-btn"
+                            title="新建场景" aria-label="新建场景">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                                stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                                <line x1="12" y1="5" x2="12" y2="19"/>
+                                <line x1="5" y1="12" x2="19" y2="12"/>
+                            </svg>
+                        </button>
+                        <button id="profile-delete-btn" class="btn toolbar-icon-btn danger"
+                            title="删除选中场景" aria-label="删除选中场景">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                                stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round">
+                                <polyline points="3 6 5 6 21 6"/>
+                                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                                <path d="M10 11v6"/><path d="M14 11v6"/>
+                                <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <span class="badge hidden-badge" id="hidden-badge" title="点击显示/隐藏">👁️ 隐藏 0</span>
                 </div>
-                <span class="badge hidden-badge" id="hidden-badge" title="点击显示/隐藏">👁️ 隐藏 0</span>
             </div>
             <div class="card-body" id="session-list">
                 <div class="skeleton skeleton-row"></div>
@@ -108,28 +135,34 @@
                 <span>Rust</span><span>Tauri 2</span><span>WASAPI</span>
             </div>
             <p class="about-author">开发者：Juice & Claude</p>
+            <label class="about-autostart-row">
+                <span>
+                    <strong>开机自启动</strong>
+                    <small>登录 Windows 后自动打开 Audio Hub</small>
+                </span>
+                <span class="toggle-switch">
+                    <input id="about-autostart" type="checkbox">
+                    <span class="toggle-switch-track"></span>
+                </span>
+            </label>
+            <p id="about-autostart-status" class="about-option-status"></p>
             <button id="about-close-btn" class="btn btn-sm">关闭</button>
         </div>
     </div>
 
-    <!-- 单应用参数 EQ -->
-    <div id="eq-modal" class="eq-modal hidden">
-        <div class="eq-card">
+    <!-- Equalizer APO 插件 -->
+    <div id="global-eq-modal" class="global-eq-modal hidden">
+        <div class="global-eq-card">
             <div class="eq-header">
-                <div>
-                    <h2>参数均衡器</h2>
-                    <p id="eq-session-name">应用会话</p>
+                <div class="eq-title-row">
+                    <h2>Equalizer APO 插件</h2>
+                    <span class="eq-help header-help" tabindex="0" role="note"
+                        aria-label="Equalizer APO 插件使用说明"
+                        data-tooltip="输出 EQ 与麦克风处理相互独立，并按设备保存。选择音色预设后会立即切换；调整参数后才需要保存。断开 Equalizer APO 会同时停止 Audio Hub 的输出 EQ 和麦克风处理，但不会卸载插件或删除参数。">?</span>
                 </div>
-                <button id="eq-close-btn" class="btn btn-icon" title="关闭">✕</button>
+                <button id="global-eq-close-btn" class="btn btn-icon" title="关闭">✕</button>
             </div>
-            <div id="eq-editor" class="eq-editor"></div>
-            <p class="eq-hint">当前验证模式：EQ 会应用于该会话新录制的 WAV；不改变正常播放声音。</p>
-            <div class="eq-actions">
-                <button id="eq-reset-btn" class="btn eq-secondary-btn">恢复默认</button>
-                <div class="eq-actions-spacer"></div>
-                <button id="eq-cancel-btn" class="btn eq-secondary-btn">取消</button>
-                <button id="eq-save-btn" class="btn btn-sm">保存</button>
-            </div>
+            <div id="global-eq-content"></div>
         </div>
     </div>
 

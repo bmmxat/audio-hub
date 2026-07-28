@@ -32,11 +32,30 @@ const state = {
     },
     captureBusy: false,
     captureStatusTimer: null,
-    eqEnabledPids: new Set(),
-    eqEditingPid: null,
-    eqEditingConfig: null,
-    eqBusy: false,
+    globalEqStatus: null,
+    globalEqConfig: null,
+    globalEqSavedConfig: null,
+    globalEqDeviceId: null,
+    globalEqPresets: [],
+    globalEqPresetName: null,
+    globalEqBusy: false,
+    globalEqMessage: null,
+    globalEqDirty: false,
+    equalizerApoTab: 'output',
+    equalizerApoEnabledDeviceIds: new Set(),
+    microphoneConfig: null,
+    microphoneSavedConfig: null,
+    microphoneDeviceId: null,
+    microphoneBusy: false,
+    microphoneMessage: null,
+    microphoneDirty: false,
+    microphoneConfigured: false,
     sessionDevices: {},         // 稳定会话标识 → deviceId 映射
+    drawerVolumes: { output: null, input: null },
+    drawerVolumeRequestIds: { output: 0, input: 0 },
+    autostartBusy: false,
+    autostartEnabled: false,
+    autostartMessage: null,
 };
 
 // ── DOM 引用 ─────────────────────────────────────────
@@ -62,13 +81,10 @@ const dom = {
     statusbarInput: $('#statusbar-input'),
     statusbarOutputName: $('#statusbar-output-name'),
     statusbarInputName: $('#statusbar-input-name'),
-    eqModal: $('#eq-modal'),
-    eqSessionName: $('#eq-session-name'),
-    eqEditor: $('#eq-editor'),
-    eqCloseBtn: $('#eq-close-btn'),
-    eqCancelBtn: $('#eq-cancel-btn'),
-    eqResetBtn: $('#eq-reset-btn'),
-    eqSaveBtn: $('#eq-save-btn'),
+    globalEqBtn: $('#global-eq-btn'),
+    globalEqModal: $('#global-eq-modal'),
+    globalEqCloseBtn: $('#global-eq-close-btn'),
+    globalEqContent: $('#global-eq-content'),
 };
 
 // ── 生命周期 ─────────────────────────────────────────
@@ -239,12 +255,10 @@ function renderSessionItem(session, isHidden) {
                 ? '停止录制并保存 WAV'
                 : state.captureStatus.active
                     ? '请先停止当前录制'
-                    : '录制此应用及其子进程的声音';
+                    : '录制此应用及其子进程的原始声音';
     const captureSvg = isRecording
         ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>'
         : '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="6"/></svg>';
-    const eqActive = state.eqEnabledPids.has(session.pid);
-
     return `
         <div class="session-item${hiddenCls}" data-pid="${session.pid}">
             <span class="session-icon">${icon}</span>
@@ -270,10 +284,6 @@ function renderSessionItem(session, isHidden) {
                     ${devOpts}
                 </div>
             </div>`}
-            <button class="eq-btn${eqActive ? ' active' : ''}"
-                    data-pid="${session.pid}"
-                    title="${session.pid === 0 ? '系统声音暂不支持单独 EQ' : '设置录制验证用的参数 EQ'}"
-                    ${session.pid === 0 ? 'disabled' : ''}>EQ</button>
             <button class="capture-btn${isRecording ? ' recording' : ''}"
                     data-pid="${session.pid}"
                     title="${escAttr(captureTitle)}"
@@ -303,53 +313,6 @@ function startCaptureStatusPolling() {
     }, 1000);
 }
 
-function defaultEqConfig() {
-    return {
-        enabled: false,
-        preamp_db: 0,
-        bands: [
-            { kind: 'low_shelf', frequency_hz: 80, gain_db: 0, q: 0.707, enabled: true },
-            { kind: 'peaking', frequency_hz: 250, gain_db: 0, q: 1, enabled: true },
-            { kind: 'peaking', frequency_hz: 1000, gain_db: 0, q: 1, enabled: true },
-            { kind: 'peaking', frequency_hz: 4000, gain_db: 0, q: 1, enabled: true },
-            { kind: 'high_shelf', frequency_hz: 12000, gain_db: 0, q: 0.707, enabled: true },
-        ],
-        limiter_enabled: true,
-    };
-}
-
-async function openEqEditor(pid) {
-    if (state.eqBusy || pid === 0) return;
-    const session = state.sessions.find((item) => item.pid === pid);
-    state.eqBusy = true;
-    setStatus('正在读取 EQ 设置…');
-    try {
-        const config = await AudioAPI.getSessionEq(pid);
-        state.eqEditingPid = pid;
-        state.eqEditingConfig = JSON.parse(JSON.stringify(config));
-        if (config.enabled) {
-            state.eqEnabledPids.add(pid);
-        } else {
-            state.eqEnabledPids.delete(pid);
-        }
-        dom.eqSessionName.textContent = session?.display_name || `PID ${pid}`;
-        renderEqEditor();
-        dom.eqModal.classList.remove('hidden');
-        setStatus('调整 EQ 后保存，新录制的 WAV 将使用这些参数');
-        renderSessionList();
-    } catch (err) {
-        setStatus(`读取 EQ 失败: ${err}`);
-    } finally {
-        state.eqBusy = false;
-    }
-}
-
-function closeEqEditor() {
-    dom.eqModal.classList.add('hidden');
-    state.eqEditingPid = null;
-    state.eqEditingConfig = null;
-}
-
 function formatEqFrequency(frequency) {
     return frequency >= 1000
         ? `${frequency / 1000} kHz`
@@ -361,57 +324,687 @@ function formatEqDb(value) {
     return `${numeric > 0 ? '+' : ''}${numeric.toFixed(1)} dB`;
 }
 
-function renderEqEditor() {
-    const config = state.eqEditingConfig;
-    if (!config) {
-        dom.eqEditor.innerHTML = '';
+function defaultGlobalEqConfig() {
+    const frequencies = [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+    return {
+        enabled: true,
+        preamp_db: 0,
+        auto_headroom: true,
+        bands: frequencies.map((frequency, index) => ({
+            kind: index === 0
+                ? 'low_shelf'
+                : index === frequencies.length - 1
+                    ? 'high_shelf'
+                    : 'peaking',
+            frequency_hz: frequency,
+            gain_db: 0,
+            q: index === 0 || index === frequencies.length - 1 ? 0.707 : 1.414,
+            enabled: true,
+        })),
+    };
+}
+
+function defaultMicrophoneConfig() {
+    return {
+        enabled: true,
+        gain_db: 8,
+        rnnoise_enabled: true,
+        rnnoise_mode: 'mono',
+    };
+}
+
+function isVirtualMicrophone(device) {
+    return /voicemeeter|vb-audio|virtual|steam streaming/i.test(device?.name || '');
+}
+
+function equalizerApoDevices(devices) {
+    return devices.filter(
+        (device) => state.equalizerApoEnabledDeviceIds.has(device.device_id),
+    );
+}
+
+function globalEqEffectivePreamp(config) {
+    if (!config?.auto_headroom) return Number(config?.preamp_db || 0);
+    const largestBoost = Math.max(
+        0,
+        ...config.bands
+            .filter((band) => band.enabled)
+            .map((band) => Number(band.gain_db)),
+    );
+    return Math.min(Number(config.preamp_db), -largestBoost);
+}
+
+async function openGlobalEqEditor() {
+    if (state.globalEqBusy) return;
+    state.globalEqBusy = true;
+    state.globalEqMessage = null;
+    state.globalEqDirty = false;
+    dom.globalEqModal.classList.remove('hidden');
+    dom.globalEqContent.innerHTML =
+        '<div class="plugin-loading">正在检测 Equalizer APO…</div>';
+    let loadError = null;
+    try {
+        const allDeviceIds = [...state.outputDevices, ...state.inputDevices]
+            .map((device) => device.device_id);
+        const [status, enabledDeviceIds] = await Promise.all([
+            AudioAPI.equalizerApoStatus(),
+            AudioAPI.equalizerApoEnabledDevices(allDeviceIds),
+        ]);
+        state.globalEqStatus = status;
+        state.equalizerApoEnabledDeviceIds = new Set(enabledDeviceIds);
+        const outputDevices = equalizerApoDevices(state.outputDevices);
+        const preferredId = localStorage.getItem('audio-hub-global-eq-device');
+        const selected = outputDevices.find(
+            (device) => device.device_id === preferredId,
+        ) || outputDevices.find((device) => device.is_default)
+            || outputDevices[0] || null;
+        state.globalEqDeviceId = selected?.device_id || null;
+        if (selected) {
+            await loadGlobalEqPresetState(selected.device_id);
+        } else {
+            state.globalEqConfig = null;
+            state.globalEqSavedConfig = null;
+            state.globalEqPresets = [];
+            state.globalEqPresetName = null;
+        }
+
+        const preferredMicrophoneId = localStorage.getItem(
+            'audio-hub-microphone-processing-device',
+        );
+        const inputDevices = equalizerApoDevices(state.inputDevices);
+        const selectedMicrophone = inputDevices.find(
+            (device) => device.device_id === preferredMicrophoneId,
+        ) || inputDevices.find((device) => !isVirtualMicrophone(device))
+            || inputDevices.find((device) => device.is_default)
+            || inputDevices[0] || null;
+        state.microphoneDeviceId = selectedMicrophone?.device_id || null;
+        if (selectedMicrophone) {
+            await loadMicrophoneProcessingState(selectedMicrophone.device_id);
+        } else {
+            state.microphoneConfig = null;
+            state.microphoneSavedConfig = null;
+            state.microphoneDirty = false;
+            state.microphoneConfigured = false;
+        }
+    } catch (err) {
+        loadError = err;
+    } finally {
+        state.globalEqBusy = false;
+        if (loadError !== null) {
+            dom.globalEqContent.innerHTML =
+                `<p class="plugin-error">插件状态读取失败：${esc(String(loadError))}</p>`;
+        } else {
+            renderGlobalEqEditor();
+        }
+    }
+}
+
+function closeGlobalEqEditor() {
+    if (!confirmDiscardGlobalEqChanges()) return;
+    dom.globalEqModal.classList.add('hidden');
+    state.globalEqConfig = null;
+    state.globalEqSavedConfig = null;
+    state.globalEqDirty = false;
+    state.microphoneConfig = null;
+    state.microphoneSavedConfig = null;
+    state.microphoneDirty = false;
+    state.microphoneConfigured = false;
+}
+
+async function loadGlobalEqDevice(deviceId) {
+    const device = equalizerApoDevices(state.outputDevices)
+        .find((item) => item.device_id === deviceId);
+    if (!device) return;
+    state.globalEqBusy = true;
+    renderGlobalEqEditor();
+    try {
+        await loadGlobalEqPresetState(deviceId);
+        state.globalEqDeviceId = deviceId;
+        localStorage.setItem('audio-hub-global-eq-device', deviceId);
+    } catch (err) {
+        setStatus(`读取全局 EQ 失败: ${err}`);
+    } finally {
+        state.globalEqBusy = false;
+        renderGlobalEqEditor();
+    }
+}
+
+async function loadGlobalEqPresetState(deviceId) {
+    const catalog = await AudioAPI.listGlobalEqPresets(deviceId);
+    const config = await AudioAPI.getGlobalEqPreset(
+        deviceId,
+        catalog.active_preset,
+    );
+    state.globalEqPresets = catalog.presets;
+    state.globalEqPresetName = catalog.active_preset;
+    state.globalEqConfig = config;
+    state.globalEqSavedConfig = structuredClone(state.globalEqConfig);
+    state.globalEqDirty = false;
+}
+
+async function loadMicrophoneProcessingDevice(deviceId) {
+    const device = equalizerApoDevices(state.inputDevices)
+        .find((item) => item.device_id === deviceId);
+    if (!device) return;
+    state.microphoneBusy = true;
+    renderGlobalEqEditor();
+    try {
+        await loadMicrophoneProcessingState(deviceId);
+        state.microphoneDeviceId = deviceId;
+        localStorage.setItem('audio-hub-microphone-processing-device', deviceId);
+    } catch (err) {
+        setStatus(`读取麦克风处理失败: ${err}`);
+    } finally {
+        state.microphoneBusy = false;
+        renderGlobalEqEditor();
+    }
+}
+
+async function loadMicrophoneProcessingState(deviceId) {
+    const result = await AudioAPI.getMicrophoneProcessing(deviceId);
+    state.microphoneConfig = result.config;
+    state.microphoneConfigured = result.configured;
+    state.microphoneSavedConfig = result.configured
+        ? structuredClone(state.microphoneConfig)
+        : null;
+    state.microphoneDirty = !result.configured;
+    state.microphoneMessage = null;
+}
+
+function confirmDiscardGlobalEqChanges() {
+    const messages = [];
+    if (state.globalEqDirty) {
+        messages.push(`音色「${state.globalEqPresetName}」`);
+    }
+    if (state.microphoneDirty) {
+        messages.push('麦克风处理');
+    }
+    return messages.length === 0 || confirm(
+        `${messages.join('和')}有未保存的参数修改，确定放弃吗？`,
+    );
+}
+
+function updateGlobalEqDirty() {
+    const previousDirty = state.globalEqDirty;
+    const hadMessage = state.globalEqMessage !== null;
+    const nextDirty = Boolean(
+        state.globalEqConfig
+        && state.globalEqSavedConfig
+        && JSON.stringify(state.globalEqConfig) !== JSON.stringify(state.globalEqSavedConfig),
+    );
+    state.globalEqDirty = nextDirty;
+    state.globalEqMessage = null;
+
+    const feedback = $('#global-eq-feedback');
+    if (feedback && (previousDirty !== nextDirty || hadMessage)) {
+        updateGlobalEqFeedback(feedback);
+    }
+
+    const saveButton = dom.globalEqContent.querySelector('[data-global-action="save"]');
+    if (saveButton) {
+        saveButton.disabled = !state.globalEqDirty || state.globalEqBusy;
+    }
+}
+
+function updateMicrophoneDirty() {
+    const previousDirty = state.microphoneDirty;
+    const hadMessage = state.microphoneMessage !== null;
+    state.microphoneDirty = Boolean(state.microphoneConfig) && (
+        !state.microphoneConfigured
+        || JSON.stringify(state.microphoneConfig)
+            !== JSON.stringify(state.microphoneSavedConfig)
+    );
+    state.microphoneMessage = null;
+
+    const feedback = $('#microphone-feedback');
+    if (feedback && (previousDirty !== state.microphoneDirty || hadMessage)) {
+        updateMicrophoneFeedback(feedback);
+    }
+    const saveButton = dom.globalEqContent.querySelector(
+        '[data-global-action="microphone-save"]',
+    );
+    if (saveButton) {
+        saveButton.disabled = !state.microphoneDirty || state.microphoneBusy;
+    }
+}
+
+function globalEqFeedbackState() {
+    if (state.globalEqDirty) {
+        return {
+            variant: 'pending',
+            text: `正在修改「${state.globalEqPresetName || '当前音色'}」；`
+                + '调整尚未生效，保存后会立即应用。',
+        };
+    }
+    if (state.globalEqMessage) {
+        return { variant: '', text: state.globalEqMessage };
+    }
+    return { variant: 'neutral', text: '当前音色参数已保存' };
+}
+
+function renderGlobalEqFeedback() {
+    const feedback = globalEqFeedbackState();
+    const variantClass = feedback.variant ? ` ${feedback.variant}` : '';
+    return `<p class="plugin-result${variantClass}">${esc(feedback.text)}</p>`;
+}
+
+function updateGlobalEqFeedback(container) {
+    const result = container.querySelector('.plugin-result');
+    if (!result) return;
+    const feedback = globalEqFeedbackState();
+    result.className = `plugin-result${feedback.variant ? ` ${feedback.variant}` : ''}`;
+    result.textContent = feedback.text;
+}
+
+function microphoneFeedbackState() {
+    if (state.microphoneDirty) {
+        return {
+            variant: 'pending',
+            text: '麦克风参数尚未生效，保存后会立即应用。',
+        };
+    }
+    if (state.microphoneMessage) {
+        return { variant: '', text: state.microphoneMessage };
+    }
+    return { variant: 'neutral', text: '当前麦克风参数已保存' };
+}
+
+function renderMicrophoneFeedback() {
+    const feedback = microphoneFeedbackState();
+    const variantClass = feedback.variant ? ` ${feedback.variant}` : '';
+    return `<p class="plugin-result${variantClass}">${esc(feedback.text)}</p>`;
+}
+
+function updateMicrophoneFeedback(container) {
+    const result = container.querySelector('.plugin-result');
+    if (!result) return;
+    const feedback = microphoneFeedbackState();
+    result.className = `plugin-result${feedback.variant ? ` ${feedback.variant}` : ''}`;
+    result.textContent = feedback.text;
+}
+
+function renderGlobalEqEditor() {
+    const status = state.globalEqStatus;
+    if (!status) {
+        dom.globalEqContent.innerHTML =
+            '<div class="plugin-loading">正在检测 Equalizer APO…</div>';
         return;
     }
 
-    const kindLabels = {
-        low_shelf: '低频搁架',
-        peaking: '峰值',
-        high_shelf: '高频搁架',
-    };
+    if (!status.installed) {
+        dom.globalEqContent.innerHTML = `
+            <div class="plugin-state-card">
+                <span class="plugin-state-dot missing"></span>
+                <div>
+                    <strong>未检测到 Equalizer APO</strong>
+                    <p>安装官方版本后，用设备配置器勾选需要处理的输出或录制设备，再回到这里连接。</p>
+                </div>
+            </div>
+            <p class="plugin-safety-note">
+                Audio Hub 不会静默安装驱动或修改 APO 注册；下载、安装和设备启用都由你明确操作。
+            </p>
+            <div class="eq-actions">
+                <button class="btn eq-secondary-btn" data-global-action="refresh">重新检测</button>
+                <div class="eq-actions-spacer"></div>
+                <button class="btn btn-sm" data-global-action="download">打开官方下载页</button>
+            </div>`;
+        return;
+    }
+
+    const stateLabel = status.connected
+        ? '已连接'
+        : '未连接';
+    const stateClass = status.connected ? 'connected' : 'ready';
+    const managedConfigPath = status.managed_config_path || status.config_path || '尚未生成';
+    const backupState = status.backup_exists
+        ? '<span class="plugin-backup-state">原配置已备份</span>'
+        : '';
+    const pluginStateCard = `
+        <div class="plugin-state-card">
+            <span class="plugin-state-dot ${stateClass}"></span>
+            <div>
+                <strong>${stateLabel}</strong>
+                <div class="plugin-config-location"
+                    title="Audio Hub 配置文件保存在 Equalizer APO 的 config 文件夹中">
+                    <span>Audio Hub 配置文件</span>
+                    <code>${esc(managedConfigPath)}</code>
+                    ${backupState}
+                </div>
+            </div>
+            <button class="btn eq-secondary-btn plugin-connect-btn
+                ${status.connected ? 'plugin-danger-btn' : ''}"
+                data-global-action="${status.connected ? 'disconnect' : 'connect'}">
+                ${status.connected ? '断开 Equalizer APO' : '连接 Equalizer APO'}
+            </button>
+        </div>`;
+    const tabBar = `
+        <div class="eq-mode-tabs" role="tablist" aria-label="Equalizer APO 功能">
+            <button class="eq-mode-tab ${state.equalizerApoTab === 'output' ? 'active' : ''}"
+                data-global-action="tab-output" role="tab"
+                aria-selected="${state.equalizerApoTab === 'output'}">输出 EQ</button>
+            <button class="eq-mode-tab ${state.equalizerApoTab === 'microphone' ? 'active' : ''}"
+                data-global-action="tab-microphone" role="tab"
+                aria-selected="${state.equalizerApoTab === 'microphone'}">麦克风处理</button>
+        </div>`;
+
+    if (state.equalizerApoTab === 'microphone') {
+        const config = state.microphoneConfig;
+        const microphoneDevices = equalizerApoDevices(state.inputDevices);
+        const microphoneOptions = microphoneDevices.map((device) => `
+            <option value="${escAttr(device.device_id)}"
+                ${device.device_id === state.microphoneDeviceId ? 'selected' : ''}>
+                ${esc(device.name)}${device.is_default ? '（系统默认）' : ''}
+                ${isVirtualMicrophone(device) ? ' · 虚拟设备' : ' · 物理设备'}
+            </option>
+        `).join('') || '<option value="">请先在设备配置器中启用录制设备</option>';
+        const virtualDeviceNote = microphoneDevices.some(isVirtualMicrophone) ? `
+            <p class="microphone-path-note">
+                检测到已启用的虚拟麦克风。通常处理物理麦克风即可；只有物理设备驱动绕过
+                APO 时，才改选最终使用的 B1/B2 虚拟麦克风。
+            </p>
+        ` : '';
+        const editor = config ? renderMicrophoneControls(config) : (
+            '<p class="plugin-error">没有在 Equalizer APO 设备配置器中启用的录制设备。</p>'
+        );
+
+        dom.globalEqContent.innerHTML = `
+            ${pluginStateCard}
+            ${tabBar}
+            <label class="device-select-field global-device-field">
+                <span>处理的麦克风</span>
+                <select id="microphone-device-select" class="device-select"
+                    ${state.microphoneBusy || microphoneDevices.length === 0 ? 'disabled' : ''}>
+                    ${microphoneOptions}
+                </select>
+            </label>
+            ${virtualDeviceNote}
+            ${editor}
+            <div id="microphone-feedback" class="global-eq-feedback"
+                aria-live="polite">${renderMicrophoneFeedback()}</div>
+            <div class="eq-actions">
+                <button class="btn eq-secondary-btn" data-global-action="configurator"
+                    title="将弹出 Windows 用户账户控制（UAC）确认"
+                    ${status.configurator_path ? '' : 'disabled'}>设备配置器（管理员）</button>
+                <div class="eq-actions-spacer"></div>
+                <button class="btn eq-secondary-btn" data-global-action="microphone-reset"
+                    ${config ? '' : 'disabled'}>恢复推荐设置</button>
+                <button class="btn btn-sm" data-global-action="microphone-save"
+                    ${config && state.microphoneDirty && !state.microphoneBusy ? '' : 'disabled'}>
+                    保存并应用
+                </button>
+            </div>`;
+        return;
+    }
+
+    const config = state.globalEqConfig;
+    const outputDevices = equalizerApoDevices(state.outputDevices);
+    const deviceOptions = outputDevices.map((device) => `
+        <option value="${escAttr(device.device_id)}"
+            ${device.device_id === state.globalEqDeviceId ? 'selected' : ''}>
+            ${esc(device.name)}${device.is_default ? '（默认）' : ''}
+        </option>
+    `).join('') || '<option value="">请先在设备配置器中启用输出设备</option>';
+    const editor = config ? renderGlobalEqControls(config) : (
+        '<p class="plugin-error">没有在 Equalizer APO 设备配置器中启用的输出设备。</p>'
+    );
+    const presetOptions = state.globalEqPresets.map((name) => `
+        <option value="${escAttr(name)}"
+            ${name === state.globalEqPresetName ? 'selected' : ''}>${esc(name)}</option>
+    `).join('');
+    const presetToolbar = config ? `
+        <div class="eq-preset-toolbar">
+            <label>
+                <span>音色预设</span>
+                <select id="global-eq-preset-select" class="device-select">${presetOptions}</select>
+            </label>
+            <button class="btn eq-secondary-btn preset-icon-btn"
+                data-global-action="preset-new" title="将当前参数另存为新音色">＋</button>
+            <button class="btn eq-secondary-btn preset-icon-btn plugin-danger-btn"
+                data-global-action="preset-delete"
+                ${state.globalEqPresets.length <= 1 ? 'disabled' : ''}
+                title="删除当前音色预设">🗑</button>
+        </div>
+    ` : '';
+    const resultMessage = renderGlobalEqFeedback();
+
+    dom.globalEqContent.innerHTML = `
+        ${pluginStateCard}
+        ${tabBar}
+        <label class="device-select-field global-device-field">
+            <span>应用到输出设备</span>
+            <select id="global-eq-device-select" class="device-select"
+                ${state.globalEqBusy || outputDevices.length === 0 ? 'disabled' : ''}>
+                ${deviceOptions}
+            </select>
+        </label>
+        ${presetToolbar}
+        ${editor}
+        <div id="global-eq-feedback" class="global-eq-feedback"
+            aria-live="polite">${resultMessage}</div>
+        <div class="eq-actions">
+            <button class="btn eq-secondary-btn" data-global-action="configurator"
+                title="将弹出 Windows 用户账户控制（UAC）确认"
+                ${status.configurator_path ? '' : 'disabled'}>设备配置器（管理员）</button>
+            <div class="eq-actions-spacer"></div>
+            <button class="btn eq-secondary-btn" data-global-action="reset"
+                ${config ? '' : 'disabled'}>恢复平直</button>
+            <button class="btn btn-sm" data-global-action="save"
+                title="仅保存当前音色的参数修改；切换预设会立即生效"
+                ${config && state.globalEqDirty && !state.globalEqBusy ? '' : 'disabled'}>
+                保存音色修改
+            </button>
+        </div>`;
+}
+
+function renderMicrophoneControls(config) {
+    const controlsDisabled = !config.enabled;
+    const monoPath = state.globalEqStatus?.rnnoise_mono_path;
+    const stereoPath = state.globalEqStatus?.rnnoise_stereo_path;
+    const pluginDirectory = state.globalEqStatus?.rnnoise_plugin_directory;
+    const selectedPluginPath = config.rnnoise_mode === 'stereo'
+        ? stereoPath
+        : monoPath;
+    const rnnoiseUnavailable = !monoPath && !stereoPath;
+    const rnnoiseStatus = selectedPluginPath
+        ? `<span class="rnnoise-status available" title="${escAttr(selectedPluginPath)}">
+            已检测插件
+        </span>`
+        : '<span class="rnnoise-status missing">未检测到对应插件</span>';
+    return `
+        <div class="microphone-processing-editor">
+            <label class="microphone-enable-row">
+                <span>
+                    <strong>启用麦克风处理</strong>
+                    <small>只关闭当前麦克风，不影响输出 EQ</small>
+                </span>
+                <input id="microphone-enabled" type="checkbox"
+                    ${config.enabled ? 'checked' : ''}>
+            </label>
+            <div class="microphone-control-row">
+                <span class="eq-label-with-help">
+                    麦克风增益
+                    <span class="eq-help" tabindex="0" role="note"
+                        aria-label="麦克风增益说明"
+                        data-tooltip="在进入 Voicemeeter 或语音软件前提高麦克风音量。建议让正常说话峰值保持在 -12 至 -6 dB；过高会削波失真并放大底噪。">?</span>
+                </span>
+                <input id="microphone-gain" type="range" min="-12" max="18" step="0.5"
+                    value="${config.gain_db}" ${controlsDisabled ? 'disabled' : ''}>
+                <span id="microphone-gain-value" class="eq-value">
+                    ${formatEqDb(config.gain_db)}
+                </span>
+            </div>
+            <div class="microphone-rnnoise-row">
+                <label class="microphone-rnnoise-switch">
+                    <span>
+                        <strong class="eq-label-with-help">
+                            RNNoise 智能降噪
+                            <span class="eq-help" tabindex="0" role="note"
+                                aria-label="RNNoise 智能降噪说明"
+                                data-tooltip="实时识别人声并抑制风扇、键盘和环境背景声。插件要求麦克风格式为 48 kHz；若出现断音，请先在 Windows 录制设备高级设置中确认采样率。">?</span>
+                        </strong>
+                        <small>抑制持续底噪与无人声时的键盘声</small>
+                    </span>
+                    <input id="microphone-rnnoise-enabled" type="checkbox"
+                        ${config.rnnoise_enabled ? 'checked' : ''}
+                        ${controlsDisabled || rnnoiseUnavailable ? 'disabled' : ''}>
+                </label>
+                <div class="rnnoise-mode-row">
+                    <label for="microphone-rnnoise-mode">处理声道</label>
+                    <select id="microphone-rnnoise-mode" class="device-select"
+                        ${controlsDisabled || !config.rnnoise_enabled ? 'disabled' : ''}>
+                        <option value="mono"
+                            ${config.rnnoise_mode === 'mono' ? 'selected' : ''}
+                            ${monoPath ? '' : 'disabled'}>单声道（推荐）</option>
+                        <option value="stereo"
+                            ${config.rnnoise_mode === 'stereo' ? 'selected' : ''}
+                            ${stereoPath ? '' : 'disabled'}>立体声</option>
+                    </select>
+                    ${rnnoiseStatus}
+                </div>
+                <div class="rnnoise-plugin-location">
+                    <span>插件文件夹</span>
+                    <code title="${escAttr(pluginDirectory || '尚未选择')}">
+                        ${esc(pluginDirectory || '尚未选择')}
+                    </code>
+                    <button class="btn eq-secondary-btn"
+                        data-global-action="rnnoise-browse">选择文件夹</button>
+                </div>
+                <p class="rnnoise-format-note">
+                    物理麦克风通常选择单声道，资源占用更低；只有需要保留左右声道时才选择立体声。
+                    输入格式必须为 48 kHz。Audio Hub 不包含 RNNoise，请自行下载 VST2 版本并选择
+                    包含 rnnoise_mono.dll / rnnoise_stereo.dll 的文件夹。
+                </p>
+            </div>
+        </div>`;
+}
+
+function renderGlobalEqControls(config) {
     const bands = config.bands.map((band, index) => `
-        <div class="eq-band-row">
-            <span class="eq-band-name">
-                ${formatEqFrequency(band.frequency_hz)}
-                <span class="eq-band-kind">${kindLabels[band.kind] || '参数段'}</span>
+        <label class="graphic-eq-band">
+            <span class="graphic-eq-value" data-global-band-value="${index}">
+                ${Number(band.gain_db) > 0 ? '+' : ''}${Number(band.gain_db).toFixed(1)}
             </span>
             <input type="range" min="-12" max="12" step="0.5"
-                   value="${band.gain_db}"
-                   data-eq-band="${index}"
-                   aria-label="${formatEqFrequency(band.frequency_hz)} 增益">
-            <span class="eq-value" data-eq-band-value="${index}">${formatEqDb(band.gain_db)}</span>
-        </div>
+                value="${band.gain_db}" data-global-band="${index}"
+                aria-label="${formatEqFrequency(band.frequency_hz)} 增益">
+            <span class="graphic-eq-frequency">${formatEqFrequency(band.frequency_hz)}</span>
+        </label>
     `).join('');
+    const effectivePreamp = globalEqEffectivePreamp(config);
 
-    dom.eqEditor.innerHTML = `
-        <div class="eq-master-row">
-            <label class="eq-switch">
-                <input id="eq-enabled" type="checkbox" ${config.enabled ? 'checked' : ''}>
-                <span>启用 EQ</span>
-            </label>
-            <span></span>
-            <span class="eq-value">${config.enabled ? '开启' : '旁路'}</span>
-        </div>
-        <div class="eq-master-row">
-            <span>前级增益</span>
-            <input id="eq-preamp" type="range" min="-12" max="6" step="0.5"
-                   value="${config.preamp_db}" aria-label="前级增益">
-            <span id="eq-preamp-value" class="eq-value">${formatEqDb(config.preamp_db)}</span>
-        </div>
-        <div class="eq-band-list">${bands}</div>
-        <div class="eq-master-row">
-            <label class="eq-switch">
-                <input id="eq-limiter" type="checkbox" ${config.limiter_enabled ? 'checked' : ''}>
-                <span>削波保护</span>
-            </label>
-            <span></span>
-            <span class="eq-value">-0.3 dB</span>
-        </div>
-    `;
+    return `
+        <div class="global-eq-editor">
+            <div class="eq-master-row">
+                <span class="eq-label-with-help">
+                    前级增益
+                    <span class="eq-help" tabindex="0" role="note"
+                        aria-label="前级增益说明"
+                        data-tooltip="在 EQ 滤波前整体提高或降低音量。提升过多可能产生削波失真；开启自动防削波后，系统会根据最高频段增益自动留出安全余量。">?</span>
+                </span>
+                <input id="global-eq-preamp" type="range" min="-12" max="6" step="0.5"
+                    value="${config.preamp_db}" aria-label="全局前级增益">
+                <span id="global-eq-preamp-value" class="eq-value">${formatEqDb(config.preamp_db)}</span>
+            </div>
+            <div class="graphic-eq-panel">
+                <div id="global-eq-curve-host">${renderGlobalEqCurve(config)}</div>
+                <div class="graphic-eq-band-grid">${bands}</div>
+            </div>
+            <div class="eq-master-row">
+                <label class="eq-switch">
+                    <input id="global-auto-headroom" type="checkbox"
+                        ${config.auto_headroom ? 'checked' : ''}>
+                    <span class="eq-label-with-help">
+                        自动防削波余量
+                        <span class="eq-help" tabindex="0" role="note"
+                            aria-label="自动防削波余量说明"
+                            data-tooltip="当某些频段被提升时，自动降低整体增益，避免超过数字音频上限而失真。右侧数值是最终实际生效的前级增益。">?</span>
+                    </span>
+                </label>
+                <span></span>
+                <span id="global-effective-preamp" class="eq-value">${formatEqDb(effectivePreamp)}</span>
+            </div>
+        </div>`;
+}
+
+function globalEqCurvePoints(config) {
+    const width = 520;
+    const height = 116;
+    const paddingX = 22;
+    const paddingY = 12;
+    return config.bands.map((band, index) => ({
+        x: paddingX + index * ((width - paddingX * 2) / (config.bands.length - 1)),
+        y: paddingY + ((12 - Number(band.gain_db)) / 24) * (height - paddingY * 2),
+    }));
+}
+
+function smoothCurvePath(points) {
+    if (points.length === 0) return '';
+    if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+    let path = `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
+    for (let index = 0; index < points.length - 1; index += 1) {
+        const before = points[Math.max(0, index - 1)];
+        const current = points[index];
+        const next = points[index + 1];
+        const after = points[Math.min(points.length - 1, index + 2)];
+        const control1X = current.x + (next.x - before.x) / 6;
+        const control1Y = current.y + (next.y - before.y) / 6;
+        const control2X = next.x - (after.x - current.x) / 6;
+        const control2Y = next.y - (after.y - current.y) / 6;
+        path += ` C ${control1X.toFixed(1)} ${control1Y.toFixed(1)},`
+            + ` ${control2X.toFixed(1)} ${control2Y.toFixed(1)},`
+            + ` ${next.x.toFixed(1)} ${next.y.toFixed(1)}`;
+    }
+    return path;
+}
+
+function renderGlobalEqCurve(config) {
+    const points = globalEqCurvePoints(config);
+    const linePath = smoothCurvePath(points);
+    const areaPath = `${linePath} L ${points.at(-1).x.toFixed(1)} 108`
+        + ` L ${points[0].x.toFixed(1)} 108 Z`;
+    const markers = points.map((point) => `
+        <circle cx="${point.x.toFixed(1)}" cy="${point.y.toFixed(1)}" r="3.2"></circle>
+    `).join('');
+    return `
+        <svg class="graphic-eq-curve" viewBox="0 0 520 116"
+            role="img" aria-label="EQ 频率响应预览">
+            <defs>
+                <linearGradient id="eq-curve-fill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0" stop-color="#8b5cf6" stop-opacity="0.32"></stop>
+                    <stop offset="1" stop-color="#8b5cf6" stop-opacity="0.02"></stop>
+                </linearGradient>
+            </defs>
+            <g class="graphic-eq-grid">
+                <line x1="22" y1="12" x2="498" y2="12"></line>
+                <line x1="22" y1="58" x2="498" y2="58"></line>
+                <line x1="22" y1="104" x2="498" y2="104"></line>
+            </g>
+            <text x="2" y="15">+12</text>
+            <text x="9" y="61">0</text>
+            <text x="2" y="107">−12</text>
+            <path class="graphic-eq-area" d="${areaPath}"></path>
+            <path class="graphic-eq-line" d="${linePath}"></path>
+            <g class="graphic-eq-markers">${markers}</g>
+        </svg>`;
+}
+
+function updateGlobalEqCurve(config) {
+    const host = $('#global-eq-curve-host');
+    if (!host) return;
+
+    const points = globalEqCurvePoints(config);
+    const linePath = smoothCurvePath(points);
+    const areaPath = `${linePath} L ${points.at(-1).x.toFixed(1)} 108`
+        + ` L ${points[0].x.toFixed(1)} 108 Z`;
+
+    host.querySelector('.graphic-eq-line')?.setAttribute('d', linePath);
+    host.querySelector('.graphic-eq-area')?.setAttribute('d', areaPath);
+    host.querySelectorAll('.graphic-eq-markers circle').forEach((marker, index) => {
+        const point = points[index];
+        if (!point) return;
+        marker.setAttribute('cx', point.x.toFixed(1));
+        marker.setAttribute('cy', point.y.toFixed(1));
+    });
 }
 
 function sessionIcon(name) {
@@ -445,17 +1038,67 @@ function renderDeviceList() {
     let html = '';
     if (state.outputDevices.length > 0) {
         html += `<div class="section-divider">🔊 输出设备 (${state.outputDevices.length})</div>`;
+        html += renderDrawerVolumeControl('output');
         for (const d of state.outputDevices) {
             html += renderDeviceItem(d);
         }
     }
     if (state.inputDevices.length > 0) {
         html += `<div class="section-divider">🎙️ 输入设备 (${state.inputDevices.length})</div>`;
+        html += renderDrawerVolumeControl('input');
         for (const d of state.inputDevices) {
             html += renderDeviceItem(d);
         }
     }
     dom.deviceList.innerHTML = html;
+}
+
+function renderDrawerVolumeControl(kind) {
+    const isOutput = kind === 'output';
+    const device = isOutput ? state.defaultOutput : state.defaultInput;
+    const volumeState = state.drawerVolumes[kind];
+    const ready = Boolean(
+        device
+        && volumeState
+        && volumeState.deviceId === device.device_id,
+    );
+    const percentage = ready
+        ? Math.round(Number(volumeState.volume) * 100)
+        : 0;
+    const muted = ready && volumeState.muted;
+    const label = isOutput ? '设备主音量' : '麦克风音量';
+    const icon = isOutput ? '🔊' : '🎙️';
+    const note = isOutput
+        ? '影响所有使用该输出设备播放的声音'
+        : 'Windows 输入级别，与 APO 麦克风增益相互独立';
+
+    return `
+        <div class="drawer-volume-card" data-device-volume-card="${kind}">
+            <div class="drawer-volume-heading">
+                <div>
+                    <strong>${label}</strong>
+                    <span title="${escAttr(device?.name || '')}">
+                        ${esc(device?.name || '未检测到默认设备')}
+                    </span>
+                </div>
+                <span class="drawer-volume-state" data-device-volume-value="${kind}">
+                    ${ready ? `${percentage}%` : '读取中…'}
+                </span>
+            </div>
+            <div class="drawer-volume-row">
+                <button class="btn drawer-volume-mute ${muted ? 'muted' : ''}"
+                    data-device-volume-mute="${kind}" ${ready ? '' : 'disabled'}
+                    title="${muted ? '取消静音' : '静音'}">
+                    ${muted ? '🔇' : icon}
+                </button>
+                <input class="drawer-volume-slider" type="range"
+                    min="0" max="100" step="1" value="${percentage}"
+                    style="--fill: ${percentage}%"
+                    data-device-volume="${kind}" ${ready ? '' : 'disabled'}
+                    aria-label="${label}">
+            </div>
+            <p>${note}</p>
+        </div>`;
 }
 
 function renderDeviceItem(device) {
@@ -517,12 +1160,125 @@ function openDrawer() {
     state.drawerOpen = true;
     dom.deviceDrawer.classList.remove('hidden');
     dom.drawerOverlay.classList.remove('hidden');
+    refreshDrawerVolumes();
 }
 
 function closeDrawer() {
     state.drawerOpen = false;
     dom.deviceDrawer.classList.add('hidden');
     dom.drawerOverlay.classList.add('hidden');
+}
+
+async function refreshDrawerVolumes() {
+    await Promise.allSettled([
+        refreshDrawerVolume('output'),
+        refreshDrawerVolume('input'),
+    ]);
+}
+
+async function refreshDrawerVolume(kind) {
+    const device = kind === 'output' ? state.defaultOutput : state.defaultInput;
+    const requestId = ++state.drawerVolumeRequestIds[kind];
+    if (!device) {
+        state.drawerVolumes[kind] = null;
+        if (state.drawerOpen) renderDeviceList();
+        return;
+    }
+    if (state.drawerVolumes[kind]?.deviceId !== device.device_id) {
+        state.drawerVolumes[kind] = null;
+        if (state.drawerOpen) renderDeviceList();
+    }
+
+    try {
+        const volumeState = await AudioAPI.getDeviceVolume(device.device_id);
+        if (requestId !== state.drawerVolumeRequestIds[kind]) return;
+        const currentDevice = kind === 'output'
+            ? state.defaultOutput
+            : state.defaultInput;
+        if (currentDevice?.device_id !== device.device_id) return;
+        state.drawerVolumes[kind] = {
+            deviceId: device.device_id,
+            ...volumeState,
+        };
+        if (state.drawerOpen) renderDeviceList();
+    } catch (err) {
+        if (requestId !== state.drawerVolumeRequestIds[kind]) return;
+        setStatus(`读取${kind === 'output' ? '设备' : '麦克风'}音量失败：${err}`);
+    }
+}
+
+function updateDrawerVolumeUi(kind) {
+    const volumeState = state.drawerVolumes[kind];
+    if (!volumeState) return;
+    const percentage = Math.round(Number(volumeState.volume) * 100);
+    const slider = dom.deviceList.querySelector(
+        `[data-device-volume="${kind}"]`,
+    );
+    const value = dom.deviceList.querySelector(
+        `[data-device-volume-value="${kind}"]`,
+    );
+    const muteButton = dom.deviceList.querySelector(
+        `[data-device-volume-mute="${kind}"]`,
+    );
+    if (slider) {
+        slider.value = percentage;
+        slider.style.setProperty('--fill', `${percentage}%`);
+    }
+    if (value) value.textContent = `${percentage}%`;
+    if (muteButton) {
+        muteButton.classList.toggle('muted', volumeState.muted);
+        muteButton.textContent = volumeState.muted
+            ? '🔇'
+            : kind === 'output' ? '🔊' : '🎙️';
+        muteButton.title = volumeState.muted ? '取消静音' : '静音';
+    }
+}
+
+async function setDrawerDeviceVolume(kind, percentage) {
+    const volumeState = state.drawerVolumes[kind];
+    if (!volumeState) return;
+    const requestId = ++state.drawerVolumeRequestIds[kind];
+    volumeState.volume = percentage / 100;
+    if (percentage > 0) volumeState.muted = false;
+    updateDrawerVolumeUi(kind);
+    try {
+        const updated = await AudioAPI.setDeviceVolume(
+            volumeState.deviceId,
+            percentage / 100,
+        );
+        if (requestId !== state.drawerVolumeRequestIds[kind]) return;
+        state.drawerVolumes[kind] = {
+            deviceId: volumeState.deviceId,
+            ...updated,
+        };
+        updateDrawerVolumeUi(kind);
+    } catch (err) {
+        if (requestId !== state.drawerVolumeRequestIds[kind]) return;
+        setStatus(`设置${kind === 'output' ? '设备' : '麦克风'}音量失败：${err}`);
+        refreshDrawerVolume(kind);
+    }
+}
+
+async function toggleDrawerDeviceMute(kind) {
+    const volumeState = state.drawerVolumes[kind];
+    if (!volumeState) return;
+    const requestId = ++state.drawerVolumeRequestIds[kind];
+    const muted = !volumeState.muted;
+    volumeState.muted = muted;
+    updateDrawerVolumeUi(kind);
+    try {
+        const updated = await AudioAPI.setDeviceMute(volumeState.deviceId, muted);
+        if (requestId !== state.drawerVolumeRequestIds[kind]) return;
+        state.drawerVolumes[kind] = {
+            deviceId: volumeState.deviceId,
+            ...updated,
+        };
+        updateDrawerVolumeUi(kind);
+    } catch (err) {
+        if (requestId !== state.drawerVolumeRequestIds[kind]) return;
+        setStatus(`设置设备静音失败：${err}`);
+        refreshDrawerVolume(kind);
+    }
 }
 
 // ── 自动保存 ─────────────────────────────────────────
@@ -685,6 +1441,7 @@ async function refreshRuntimeState({ sessions: refreshSessions, devices: refresh
         if (devicesChanged) {
             renderDeviceList();
             renderStatusbar();
+            if (state.drawerOpen) refreshDrawerVolumes();
         }
 
         if (devicesChanged || (sessionsChanged && !routeDropdownOpen)) {
@@ -821,6 +1578,55 @@ function updateThemeIcon(isLight) {
         : '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';
 }
 
+async function loadAboutAutostart() {
+    state.autostartBusy = true;
+    state.autostartMessage = '正在读取启动设置…';
+    renderAboutAutostart();
+    try {
+        state.autostartEnabled = await AudioAPI.getAutostartEnabled();
+        state.autostartMessage = '';
+    } catch (err) {
+        state.autostartMessage = `读取失败：${err}`;
+    } finally {
+        state.autostartBusy = false;
+        renderAboutAutostart();
+    }
+}
+
+function renderAboutAutostart() {
+    const checkbox = $('#about-autostart');
+    const status = $('#about-autostart-status');
+    if (checkbox) {
+        checkbox.checked = state.autostartEnabled;
+        checkbox.disabled = state.autostartBusy;
+    }
+    if (status) {
+        status.textContent = state.autostartMessage || '';
+        status.classList.toggle(
+            'error',
+            Boolean(state.autostartMessage?.includes('失败')),
+        );
+    }
+}
+
+async function setAboutAutostart(enabled) {
+    state.autostartBusy = true;
+    state.autostartMessage = '正在更新…';
+    renderAboutAutostart();
+    try {
+        state.autostartEnabled = await AudioAPI.setAutostartEnabled(enabled);
+        state.autostartMessage = state.autostartEnabled
+            ? '已启用'
+            : '已关闭';
+        setStatus(`开机自启动${state.autostartMessage}`);
+    } catch (err) {
+        state.autostartMessage = `修改失败：${err}`;
+    } finally {
+        state.autostartBusy = false;
+        renderAboutAutostart();
+    }
+}
+
 // ── 降级对话框（Win11 API 受限时）─────────────────────
 function showFallbackDialog() {
     const msg =
@@ -833,8 +1639,9 @@ function showFallbackDialog() {
 // ── 事件绑定 ─────────────────────────────────────────
 function setupEventListeners() {
     // About 弹窗
-    $('#about-btn')?.addEventListener('click', () => {
+    $('#about-btn')?.addEventListener('click', async () => {
         $('#about-modal').classList.remove('hidden');
+        await loadAboutAutostart();
     });
     $('#about-close-btn')?.addEventListener('click', () => {
         $('#about-modal').classList.add('hidden');
@@ -844,65 +1651,314 @@ function setupEventListeners() {
             $('#about-modal').classList.add('hidden');
         }
     });
+    $('#about-autostart')?.addEventListener('change', (e) => {
+        setAboutAutostart(e.target.checked);
+    });
 
-    dom.eqCloseBtn.addEventListener('click', closeEqEditor);
-    dom.eqCancelBtn.addEventListener('click', closeEqEditor);
-    dom.eqModal.addEventListener('click', (e) => {
-        if (e.target === dom.eqModal) closeEqEditor();
+    dom.globalEqBtn.addEventListener('click', openGlobalEqEditor);
+    dom.globalEqCloseBtn.addEventListener('click', closeGlobalEqEditor);
+    dom.globalEqModal.addEventListener('click', (e) => {
+        if (e.target === dom.globalEqModal) closeGlobalEqEditor();
     });
-    dom.eqResetBtn.addEventListener('click', () => {
-        if (state.eqEditingPid === null) return;
-        state.eqEditingConfig = defaultEqConfig();
-        renderEqEditor();
-    });
-    dom.eqSaveBtn.addEventListener('click', async () => {
-        if (state.eqEditingPid === null || !state.eqEditingConfig || state.eqBusy) return;
-        const pid = state.eqEditingPid;
-        state.eqBusy = true;
-        dom.eqSaveBtn.disabled = true;
-        try {
-            const saved = await AudioAPI.setSessionEq(pid, state.eqEditingConfig);
-            if (saved.enabled) {
-                state.eqEnabledPids.add(pid);
-            } else {
-                state.eqEnabledPids.delete(pid);
+    dom.globalEqContent.addEventListener('change', async (e) => {
+        if (e.target.id === 'microphone-rnnoise-mode') {
+            state.microphoneConfig.rnnoise_mode = e.target.value;
+            updateMicrophoneDirty();
+            renderGlobalEqEditor();
+            return;
+        }
+        if (e.target.id === 'microphone-device-select') {
+            if (state.microphoneConfigured && state.microphoneDirty && !confirm(
+                '当前麦克风参数尚未保存，确定放弃修改并切换设备吗？',
+            )) {
+                renderGlobalEqEditor();
+                return;
             }
-            closeEqEditor();
-            renderSessionList();
-            setStatus(saved.enabled
-                ? 'EQ 已保存，将应用于该会话的新录制'
-                : 'EQ 已关闭，后续录制将保持原始声音');
-        } catch (err) {
-            setStatus(`保存 EQ 失败: ${err}`);
-        } finally {
-            state.eqBusy = false;
-            dom.eqSaveBtn.disabled = false;
+            await loadMicrophoneProcessingDevice(e.target.value);
+            return;
+        }
+        if (e.target.id === 'global-eq-device-select') {
+            if (!confirmDiscardGlobalEqChanges()) {
+                renderGlobalEqEditor();
+                return;
+            }
+            await loadGlobalEqDevice(e.target.value);
+            return;
+        }
+        if (e.target.id === 'global-eq-preset-select') {
+            const presetName = e.target.value;
+            if (!state.globalEqDeviceId || !presetName) return;
+            if (!confirmDiscardGlobalEqChanges()) {
+                renderGlobalEqEditor();
+                return;
+            }
+            state.globalEqBusy = true;
+            renderGlobalEqEditor();
+            try {
+                state.globalEqConfig = await AudioAPI.activateGlobalEqPreset(
+                    state.globalEqDeviceId,
+                    presetName,
+                );
+                state.globalEqSavedConfig = structuredClone(state.globalEqConfig);
+                state.globalEqPresetName = presetName;
+                state.globalEqDirty = false;
+                state.globalEqMessage = state.globalEqStatus.connected
+                    ? `已切换并应用音色：${presetName}`
+                    : `已切换音色：${presetName}；连接 Equalizer APO 后生效`;
+                setStatus(state.globalEqStatus.connected
+                    ? `已立即应用音色预设「${presetName}」`
+                    : `已切换音色预设「${presetName}」；连接后生效`);
+            } catch (err) {
+                setStatus(`切换音色预设失败: ${err}`);
+            } finally {
+                state.globalEqBusy = false;
+                renderGlobalEqEditor();
+            }
+            return;
         }
     });
-    dom.eqEditor.addEventListener('input', (e) => {
-        const config = state.eqEditingConfig;
+    dom.globalEqContent.addEventListener('input', (e) => {
+        const microphoneConfig = state.microphoneConfig;
+        if (microphoneConfig) {
+            if (e.target.id === 'microphone-enabled') {
+                microphoneConfig.enabled = e.target.checked;
+                updateMicrophoneDirty();
+                renderGlobalEqEditor();
+                return;
+            }
+            if (e.target.id === 'microphone-rnnoise-enabled') {
+                microphoneConfig.rnnoise_enabled = e.target.checked;
+                updateMicrophoneDirty();
+                renderGlobalEqEditor();
+                return;
+            }
+            if (e.target.id === 'microphone-gain') {
+                microphoneConfig.gain_db = Number(e.target.value);
+                updateMicrophoneDirty();
+                $('#microphone-gain-value').textContent =
+                    formatEqDb(microphoneConfig.gain_db);
+                return;
+            }
+        }
+
+        const config = state.globalEqConfig;
         if (!config) return;
-        if (e.target.id === 'eq-enabled') {
-            config.enabled = e.target.checked;
-            renderEqEditor();
+        if (e.target.id === 'global-auto-headroom') {
+            config.auto_headroom = e.target.checked;
+            updateGlobalEqDirty();
+            renderGlobalEqEditor();
             return;
         }
-        if (e.target.id === 'eq-limiter') {
-            config.limiter_enabled = e.target.checked;
-            return;
-        }
-        if (e.target.id === 'eq-preamp') {
+        if (e.target.id === 'global-eq-preamp') {
             config.preamp_db = Number(e.target.value);
-            $('#eq-preamp-value').textContent = formatEqDb(config.preamp_db);
+            updateGlobalEqDirty();
+            $('#global-eq-preamp-value').textContent =
+                formatEqDb(config.preamp_db);
+            $('#global-effective-preamp').textContent =
+                formatEqDb(globalEqEffectivePreamp(config));
             return;
         }
-        const bandIndex = Number(e.target.dataset.eqBand);
+        const bandIndex = Number(e.target.dataset.globalBand);
         if (Number.isInteger(bandIndex) && config.bands[bandIndex]) {
             config.bands[bandIndex].gain_db = Number(e.target.value);
-            const value = dom.eqEditor.querySelector(
-                `[data-eq-band-value="${bandIndex}"]`,
+            updateGlobalEqDirty();
+            const value = dom.globalEqContent.querySelector(
+                `[data-global-band-value="${bandIndex}"]`,
             );
-            if (value) value.textContent = formatEqDb(e.target.value);
+            if (value) {
+                const gain = Number(e.target.value);
+                value.textContent = `${gain > 0 ? '+' : ''}${gain.toFixed(1)}`;
+            }
+            updateGlobalEqCurve(config);
+            $('#global-effective-preamp').textContent =
+                formatEqDb(globalEqEffectivePreamp(config));
+        }
+    });
+    dom.globalEqContent.addEventListener('click', async (e) => {
+        const button = e.target.closest('[data-global-action]');
+        if (!button || button.disabled || state.globalEqBusy || state.microphoneBusy) return;
+        const action = button.dataset.globalAction;
+        if (action === 'tab-output') {
+            if (state.equalizerApoTab === 'microphone' && state.microphoneDirty
+                && !confirm('麦克风参数尚未保存，确定放弃修改并切换页面吗？')) {
+                return;
+            }
+            if (state.microphoneDirty && state.microphoneSavedConfig) {
+                state.microphoneConfig = structuredClone(state.microphoneSavedConfig);
+                state.microphoneDirty = false;
+            }
+            state.equalizerApoTab = 'output';
+            renderGlobalEqEditor();
+            return;
+        }
+        if (action === 'tab-microphone') {
+            if (state.equalizerApoTab === 'output' && state.globalEqDirty
+                && !confirm('当前音色参数尚未保存，确定放弃修改并切换页面吗？')) {
+                return;
+            }
+            if (state.globalEqDirty && state.globalEqSavedConfig) {
+                state.globalEqConfig = structuredClone(state.globalEqSavedConfig);
+                state.globalEqDirty = false;
+            }
+            state.equalizerApoTab = 'microphone';
+            renderGlobalEqEditor();
+            return;
+        }
+        if (action === 'download') {
+            await AudioAPI.openEqualizerApoDownload()
+                .catch((err) => setStatus(`打开下载页失败: ${err}`));
+            return;
+        }
+        if (action === 'configurator') {
+            await AudioAPI.openEqualizerApoConfigurator()
+                .catch((err) => setStatus(`启动 Configurator 失败: ${err}`));
+            return;
+        }
+        if (action === 'rnnoise-browse') {
+            state.microphoneBusy = true;
+            renderGlobalEqEditor();
+            try {
+                const updatedStatus = await AudioAPI.chooseRnnoisePluginDirectory();
+                if (updatedStatus) {
+                    state.globalEqStatus = updatedStatus;
+                    state.microphoneMessage = '已更新 RNNoise 插件文件夹。';
+                    setStatus('已更新 RNNoise 插件文件夹');
+                }
+            } catch (err) {
+                setStatus(`选择 RNNoise 插件文件夹失败: ${err}`);
+            } finally {
+                state.microphoneBusy = false;
+                renderGlobalEqEditor();
+            }
+            return;
+        }
+        if (action === 'refresh') {
+            state.globalEqStatus = null;
+            await openGlobalEqEditor();
+            return;
+        }
+        if (action === 'reset') {
+            state.globalEqConfig = defaultGlobalEqConfig();
+            updateGlobalEqDirty();
+            renderGlobalEqEditor();
+            return;
+        }
+        if (action === 'microphone-reset') {
+            state.microphoneConfig = defaultMicrophoneConfig();
+            updateMicrophoneDirty();
+            renderGlobalEqEditor();
+            return;
+        }
+        let newPresetName = null;
+        if (action === 'preset-new') {
+            const entered = prompt('输入新音色名称（例如“FPS 脚步增强”）：');
+            if (!entered || !entered.trim()) return;
+            newPresetName = entered.trim();
+            if (state.globalEqPresets.includes(newPresetName)) {
+                setStatus(`音色预设「${newPresetName}」已存在`);
+                return;
+            }
+        }
+        if (action === 'preset-delete') {
+            const dirtyWarning = state.globalEqDirty ? '\n未保存的参数修改也会丢失。' : '';
+            if (!confirm(
+                `确定删除音色预设「${state.globalEqPresetName}」吗？${dirtyWarning}`,
+            )) return;
+        }
+        if (action === 'disconnect' && !confirm(
+            '确定断开 Equalizer APO 吗？\n\n'
+            + '这会停止 Audio Hub 的输出 EQ 和麦克风处理。'
+            + '不会卸载 Equalizer APO，也不会删除已保存的参数。',
+        )) return;
+
+        state.globalEqBusy = true;
+        state.microphoneBusy = true;
+        renderGlobalEqEditor();
+        try {
+            if (action === 'connect') {
+                state.globalEqStatus = await AudioAPI.connectEqualizerApo();
+                state.globalEqMessage = '已连接 Equalizer APO，配置会在后台自动重载。';
+                state.microphoneMessage = state.globalEqMessage;
+                setStatus('已连接 Equalizer APO；配置将在后台自动重载');
+            } else if (action === 'disconnect') {
+                state.globalEqStatus = await AudioAPI.disconnectEqualizerApo();
+                state.globalEqMessage = '已断开 Equalizer APO；所有设备的已保存参数仍然保留。';
+                state.microphoneMessage = state.globalEqMessage;
+                setStatus('已断开 Equalizer APO，Audio Hub EQ 参数仍保留');
+            } else if (action === 'microphone-save') {
+                const device = state.inputDevices.find(
+                    (item) => item.device_id === state.microphoneDeviceId,
+                );
+                if (!device || !state.microphoneConfig) {
+                    throw new Error('所选麦克风已断开');
+                }
+                state.microphoneConfig = await AudioAPI.setMicrophoneProcessing(
+                    device.device_id,
+                    device.name,
+                    state.microphoneConfig,
+                );
+                state.microphoneSavedConfig = structuredClone(state.microphoneConfig);
+                state.microphoneDirty = false;
+                state.microphoneConfigured = true;
+                state.microphoneMessage = state.globalEqStatus.connected
+                    ? `已保存并应用到 ${device.name}`
+                    : '麦克风参数已保存；连接 Equalizer APO 后生效。';
+                localStorage.setItem(
+                    'audio-hub-microphone-processing-device',
+                    device.device_id,
+                );
+                setStatus(state.microphoneMessage);
+            } else if (action === 'save' || action === 'preset-new') {
+                const device = state.outputDevices.find(
+                    (item) => item.device_id === state.globalEqDeviceId,
+                );
+                const presetName = action === 'preset-new'
+                    ? newPresetName
+                    : state.globalEqPresetName;
+                if (!device || !state.globalEqConfig || !presetName) {
+                    throw new Error('所选输出设备已断开');
+                }
+                state.globalEqConfig = await AudioAPI.saveGlobalEqPreset(
+                    device.device_id,
+                    device.name,
+                    presetName,
+                    state.globalEqConfig,
+                );
+                const catalog = await AudioAPI.listGlobalEqPresets(device.device_id);
+                state.globalEqPresets = catalog.presets;
+                state.globalEqPresetName = presetName;
+                state.globalEqSavedConfig = structuredClone(state.globalEqConfig);
+                state.globalEqDirty = false;
+                state.globalEqMessage = state.globalEqStatus.connected
+                    ? `已保存并应用「${presetName}」的参数修改`
+                    : '参数已保存；连接 Equalizer APO 后才会生效。';
+                setStatus(state.globalEqStatus.connected
+                    ? `已保存「${presetName}」的修改并应用到 ${device.name}`
+                    : '全局 EQ 已保存；接入 Equalizer APO 后才会生效');
+            } else if (action === 'preset-delete') {
+                const deletedName = state.globalEqPresetName;
+                const catalog = await AudioAPI.deleteGlobalEqPreset(
+                    state.globalEqDeviceId,
+                    deletedName,
+                );
+                state.globalEqPresets = catalog.presets;
+                state.globalEqPresetName = catalog.active_preset;
+                state.globalEqDirty = false;
+                state.globalEqConfig = await AudioAPI.getGlobalEqPreset(
+                    state.globalEqDeviceId,
+                    catalog.active_preset,
+                );
+                state.globalEqSavedConfig = structuredClone(state.globalEqConfig);
+                state.globalEqMessage =
+                    `已删除音色「${deletedName}」，当前切换到「${catalog.active_preset}」`;
+                setStatus(state.globalEqMessage);
+            }
+        } catch (err) {
+            setStatus(`Equalizer APO 插件操作失败: ${err}`);
+        } finally {
+            state.globalEqBusy = false;
+            state.microphoneBusy = false;
+            renderGlobalEqEditor();
         }
     });
 
@@ -927,12 +1983,25 @@ function setupEventListeners() {
     // 设备抽屉关门
     dom.drawerCloseBtn.addEventListener('click', closeDrawer);
     dom.drawerOverlay.addEventListener('click', closeDrawer);
+    dom.deviceList.addEventListener('input', (e) => {
+        const slider = e.target.closest('[data-device-volume]');
+        if (!slider) return;
+        setDrawerDeviceVolume(
+            slider.dataset.deviceVolume,
+            Number(slider.value),
+        );
+    });
+    dom.deviceList.addEventListener('click', (e) => {
+        const muteButton = e.target.closest('[data-device-volume-mute]');
+        if (!muteButton || muteButton.disabled) return;
+        toggleDrawerDeviceMute(muteButton.dataset.deviceVolumeMute);
+    });
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && state.drawerOpen) {
             closeDrawer();
         }
-        if (e.key === 'Escape' && !dom.eqModal.classList.contains('hidden')) {
-            closeEqEditor();
+        if (e.key === 'Escape' && !dom.globalEqModal.classList.contains('hidden')) {
+            closeGlobalEqEditor();
         }
     });
 
@@ -960,12 +2029,6 @@ function setupEventListeners() {
     });
 
     dom.sessionList.addEventListener('click', async (e) => {
-        const button = e.target.closest('.eq-btn');
-        if (!button || button.disabled) return;
-        await openEqEditor(parseInt(button.dataset.pid, 10));
-    });
-
-    dom.sessionList.addEventListener('click', async (e) => {
         const button = e.target.closest('.capture-btn');
         if (!button || button.disabled || state.captureBusy) return;
 
@@ -979,7 +2042,7 @@ function setupEventListeners() {
                 const result = await AudioAPI.stopProcessCapture();
                 state.captureStatus = await AudioAPI.processCaptureStatus();
                 setStatus(
-                    `录制完成：${Math.round(result.duration_ms / 1000)} 秒${result.eq_applied ? '（已应用 EQ）' : ''}`,
+                    `录制完成：${Math.round(result.duration_ms / 1000)} 秒`,
                 );
                 if (confirm(`录制已保存到：\n${result.output_path}\n\n是否在文件夹中显示？`)) {
                     await AudioAPI.revealCaptureFile(result.output_path);
@@ -1083,27 +2146,28 @@ function setupEventListeners() {
         renderSessionList();
     });
 
-    // Profile 新建（不允许重名）
+    // 场景新建（不允许重名）
     dom.profileNewBtn.addEventListener('click', async () => {
-        const name = prompt('输入配置名称（例如"游戏模式"）：');
+        const name = prompt('输入场景名称（例如“FPS”或“电影”）：');
         if (!name || !name.trim()) return;
         if (state.profiles.includes(name.trim())) {
-            setStatus(`配置「${name.trim()}」已存在`);
+            setStatus(`场景「${name.trim()}」已存在`);
             return;
         }
         try {
             await AudioAPI.saveProfile(name.trim(), state.sessions);
             state.profiles = await AudioAPI.listProfiles();
-            dom.profileSelect.value = name.trim();
+            localStorage.setItem('audio-hub-profile', name.trim());
             renderProfiles();
-            setStatus(`已保存「${name.trim()}」`);
+            dom.profileSelect.value = name.trim();
+            setStatus(`已创建场景「${name.trim()}」`);
         } catch (err) {
-            console.error('保存配置失败：', err);
-            setStatus('保存失败');
+            console.error('创建场景失败：', err);
+            setStatus('创建场景失败');
         }
     });
 
-    // Profile 选择即切换（记住上次选择）
+    // 场景选择即切换（记住上次选择）
     dom.profileSelect.addEventListener('change', async () => {
         const name = dom.profileSelect.value;
         if (!name) return;
@@ -1111,22 +2175,22 @@ function setupEventListeners() {
         try {
             await AudioAPI.applyProfile(name);
             await loadAllData();
-            setStatus(`已切换至「${name}」`);
+            setStatus(`已切换至场景「${name}」`);
         } catch (err) {
-            console.error('应用配置失败：', err);
-            setStatus('切换失败');
+            console.error('应用场景失败：', err);
+            setStatus('场景切换失败');
         }
     });
 
-    // Profile 删除（仅剩一个时不可删除）
+    // 场景删除（仅剩一个时不可删除）
     dom.profileDeleteBtn.addEventListener('click', async () => {
         const name = dom.profileSelect.value;
         if (!name) return;
         if (state.profiles.length <= 1) {
-            setStatus('最后一个配置不可删除');
+            setStatus('最后一个场景不可删除');
             return;
         }
-        if (!confirm(`确定删除配置「${name}」？`)) return;
+        if (!confirm(`确定删除场景「${name}」？`)) return;
         try {
             await AudioAPI.deleteProfile(name);
             state.profiles = await AudioAPI.listProfiles();
@@ -1140,8 +2204,8 @@ function setupEventListeners() {
             }
             setStatus(`已删除「${name}」`);
         } catch (err) {
-            console.error('删除配置失败：', err);
-            setStatus('删除失败');
+            console.error('删除场景失败：', err);
+            setStatus('删除场景失败');
         }
     });
 
@@ -1180,6 +2244,7 @@ function setupEventListeners() {
         try {
             await AudioAPI.setDefaultDevice(deviceId);
             await loadAllData();
+            await refreshDrawerVolumes();
 
             const newId = isInput
                 ? state.defaultInput?.device_id

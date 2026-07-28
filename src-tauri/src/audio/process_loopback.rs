@@ -47,12 +47,10 @@ use windows::{
     core::{HRESULT, IUnknown, Interface, Ref, Result as WindowsResult, implement, w},
 };
 
-use super::eq::{ParametricEq, SessionEqConfig};
-
 const MIN_PROCESS_LOOPBACK_BUILD: u32 = 20_348;
-const CAPTURE_SAMPLE_RATE: u32 = 48_000;
-const CAPTURE_CHANNELS: u16 = 2;
-const CAPTURE_BITS_PER_SAMPLE: u16 = 16;
+pub(super) const CAPTURE_SAMPLE_RATE: u32 = 48_000;
+pub(super) const CAPTURE_CHANNELS: u16 = 2;
+pub(super) const CAPTURE_BITS_PER_SAMPLE: u16 = 16;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProcessLoopbackSupport {
@@ -81,7 +79,6 @@ pub struct ProcessCaptureResult {
     pub frames_written: u64,
     pub bytes_written: u64,
     pub duration_ms: u64,
-    pub eq_applied: bool,
 }
 
 struct ActiveCapture {
@@ -115,12 +112,7 @@ impl ProcessCaptureManager {
         }
     }
 
-    pub fn start(
-        &self,
-        pid: u32,
-        output_dir: &Path,
-        eq_config: SessionEqConfig,
-    ) -> Result<ProcessCaptureStatus, String> {
+    pub fn start(&self, pid: u32, output_dir: &Path) -> Result<ProcessCaptureStatus, String> {
         if pid == 0 {
             return Err("系统声音不支持按进程捕获，请选择一个应用会话".to_string());
         }
@@ -149,9 +141,7 @@ impl ProcessCaptureManager {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        eq_config.validate()?;
-        let eq_suffix = if eq_config.enabled { "-eq" } else { "" };
-        let output_path = output_dir.join(format!("process-{pid}-{timestamp}{eq_suffix}.wav"));
+        let output_path = output_dir.join(format!("process-{pid}-{timestamp}.wav"));
 
         let (stop_tx, stop_rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
@@ -160,8 +150,7 @@ impl ProcessCaptureManager {
         let join = thread::Builder::new()
             .name(format!("audio-hub-capture-{pid}"))
             .spawn(move || {
-                let result =
-                    capture_process_audio(pid, &thread_output_path, stop_rx, ready_tx, eq_config);
+                let result = capture_process_audio(pid, &thread_output_path, stop_rx, ready_tx);
                 let _ = result_tx.send(result);
             })
             .map_err(|error| format!("无法启动捕获线程: {error}"))?;
@@ -312,10 +301,10 @@ impl ProcessCaptureManager {
     }
 }
 
-struct ComApartment(bool);
+pub(super) struct ComApartment(bool);
 
 impl ComApartment {
-    fn initialize() -> WindowsResult<Self> {
+    pub(super) fn initialize() -> WindowsResult<Self> {
         let result = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
         if result == RPC_E_CHANGED_MODE {
             return Ok(Self(false));
@@ -350,7 +339,7 @@ impl IActivateAudioInterfaceCompletionHandler_Impl for ActivationHandler_Impl {
     }
 }
 
-fn activate_process_audio_client(pid: u32) -> Result<IAudioClient, String> {
+pub(super) fn activate_process_audio_client(pid: u32) -> Result<IAudioClient, String> {
     let mut activation_params = AUDIOCLIENT_ACTIVATION_PARAMS {
         ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
         Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
@@ -427,13 +416,11 @@ fn capture_process_audio(
     output_path: &Path,
     stop_rx: Receiver<()>,
     ready_tx: mpsc::SyncSender<Result<(), String>>,
-    eq_config: SessionEqConfig,
 ) -> Result<ProcessCaptureResult, String> {
     let started_at = Instant::now();
     let _apartment =
         ComApartment::initialize().map_err(|error| format!("COM 初始化失败: {error:?}"))?;
-    let eq_applied = eq_config.enabled;
-    let init_result = initialize_capture(pid, output_path, &eq_config);
+    let init_result = initialize_capture(pid, output_path);
     let (audio_client, capture_client, event, mut writer) = match init_result {
         Ok(initialized) => initialized,
         Err(error) => {
@@ -482,14 +469,12 @@ fn capture_process_audio(
         frames_written,
         bytes_written,
         duration_ms: started_at.elapsed().as_millis() as u64,
-        eq_applied,
     })
 }
 
 fn initialize_capture(
     pid: u32,
     output_path: &Path,
-    eq_config: &SessionEqConfig,
 ) -> Result<(IAudioClient, IAudioCaptureClient, OwnedEvent, WaveWriter), String> {
     let audio_client = activate_process_audio_client(pid)?;
     let format = capture_format();
@@ -507,7 +492,7 @@ fn initialize_capture(
         OwnedEvent::create(false).map_err(|error| format!("创建采样事件失败: {error:?}"))?;
     unsafe { audio_client.SetEventHandle(event.handle()) }
         .map_err(|error| format!("注册采样事件失败: {error:?}"))?;
-    let writer = WaveWriter::create(output_path, format, eq_config)?;
+    let writer = WaveWriter::create(output_path, format)?;
     Ok((audio_client, capture_client, event, writer))
 }
 
@@ -540,7 +525,7 @@ fn drain_capture_packets(
     }
 }
 
-fn capture_format() -> WAVEFORMATEX {
+pub(super) fn capture_format() -> WAVEFORMATEX {
     let block_align = CAPTURE_CHANNELS * CAPTURE_BITS_PER_SAMPLE / 8;
     WAVEFORMATEX {
         wFormatTag: WAVE_FORMAT_PCM as u16,
@@ -553,14 +538,14 @@ fn capture_format() -> WAVEFORMATEX {
     }
 }
 
-struct OwnedEvent(HANDLE);
+pub(super) struct OwnedEvent(HANDLE);
 
 impl OwnedEvent {
-    fn create(manual_reset: bool) -> WindowsResult<Self> {
+    pub(super) fn create(manual_reset: bool) -> WindowsResult<Self> {
         unsafe { CreateEventW(None, manual_reset, false, w!("")) }.map(Self)
     }
 
-    fn handle(&self) -> HANDLE {
+    pub(super) fn handle(&self) -> HANDLE {
         self.0
     }
 }
@@ -578,68 +563,23 @@ struct WaveWriter {
     format: WAVEFORMATEX,
     data_bytes: u64,
     frames: u64,
-    eq: Option<ParametricEq>,
-    sample_buffer: Vec<f32>,
-    output_buffer: Vec<u8>,
 }
 
 impl WaveWriter {
-    fn create(
-        path: &Path,
-        format: WAVEFORMATEX,
-        eq_config: &SessionEqConfig,
-    ) -> Result<Self, String> {
+    fn create(path: &Path, format: WAVEFORMATEX) -> Result<Self, String> {
         let mut file = File::create(path).map_err(|error| format!("无法创建 WAV 文件: {error}"))?;
         write_wav_header(&mut file, format, 0)?;
-        let eq = eq_config
-            .enabled
-            .then(|| ParametricEq::new(eq_config, format.nSamplesPerSec, format.nChannels))
-            .transpose()?;
         Ok(Self {
             file,
             format,
             data_bytes: 0,
             frames: 0,
-            eq,
-            sample_buffer: Vec::new(),
-            output_buffer: Vec::new(),
         })
     }
 
     fn write_frames(&mut self, data: *const u8, frames: u32, silent: bool) -> Result<(), String> {
         let byte_count = frames as usize * self.format.nBlockAlign as usize;
-        if self.eq.is_some() {
-            let sample_count = frames as usize * self.format.nChannels as usize;
-            self.sample_buffer.clear();
-            self.sample_buffer.reserve(sample_count);
-
-            if silent {
-                self.sample_buffer.resize(sample_count, 0.0);
-            } else {
-                if data.is_null() {
-                    return Err("Windows 返回了空的音频数据缓冲区".to_string());
-                }
-                let bytes = unsafe { std::slice::from_raw_parts(data, byte_count) };
-                self.sample_buffer.extend(
-                    bytes
-                        .chunks_exact(2)
-                        .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]) as f32 / 32_768.0),
-                );
-            }
-
-            if let Some(eq) = &mut self.eq {
-                eq.process_interleaved(&mut self.sample_buffer);
-            }
-            self.output_buffer.clear();
-            self.output_buffer.reserve(byte_count);
-            for sample in &self.sample_buffer {
-                let pcm = (sample.clamp(-1.0, 1.0) * 32_767.0).round() as i16;
-                self.output_buffer.extend_from_slice(&pcm.to_le_bytes());
-            }
-            self.file
-                .write_all(&self.output_buffer)
-                .map_err(|error| format!("写入 EQ 音频数据失败: {error}"))?;
-        } else if silent {
+        if silent {
             const ZEROES: [u8; 8192] = [0; 8192];
             let mut remaining = byte_count;
             while remaining > 0 {

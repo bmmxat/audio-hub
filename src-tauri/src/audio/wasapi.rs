@@ -1,8 +1,10 @@
+use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
+
 use windows::{
     Win32::{
         Devices::FunctionDiscovery::PKEY_Device_FriendlyName,
         Foundation::{CloseHandle, RPC_E_CHANGED_MODE},
-        Media::Audio::*,
+        Media::Audio::{Endpoints::IAudioEndpointVolume, *},
         System::{
             Com::{StructuredStorage::PROPVARIANT, *},
             Diagnostics::ToolHelp::{
@@ -15,7 +17,7 @@ use windows::{
     core::*,
 };
 
-use super::device::{AudioDevice, AudioSession, DeviceDirection};
+use super::device::{AudioDevice, AudioSession, DeviceDirection, DeviceVolumeState};
 
 // ── COM 生命周期封装 ──────────────────────────────────────────
 
@@ -124,6 +126,17 @@ fn get_device_id(device: &IMMDevice) -> Result<String> {
     Ok(unsafe { id.to_string()? })
 }
 
+/// 根据端点 ID 获取设备。
+fn get_device_by_id(enumerator: &IMMDeviceEnumerator, device_id: &str) -> Result<IMMDevice> {
+    let wide_id: Vec<u16> = OsStr::new(device_id).encode_wide().chain(Some(0)).collect();
+    unsafe { enumerator.GetDevice(PCWSTR(wide_id.as_ptr())) }
+}
+
+/// 激活设备级主音量接口。
+fn get_endpoint_volume(device: &IMMDevice) -> Result<IAudioEndpointVolume> {
+    unsafe { device.Activate(CLSCTX_ALL, None) }
+}
+
 // ── 公开 API ──────────────────────────────────────────────────
 
 /// 获取默认渲染设备的端点 ID 字符串（基于 GUID 的标识符）。
@@ -155,6 +168,63 @@ pub fn enumerate_devices(direction: DeviceDirection) -> Result<Vec<AudioDevice>>
     };
 
     enumerate_devices_impl(dataflow)
+}
+
+/// 获取指定输出或输入端点的 Windows 主音量。
+pub fn get_device_volume(device_id: &str) -> Result<DeviceVolumeState> {
+    with_com(|| {
+        let enumerator = create_device_enumerator()?;
+        let device = get_device_by_id(&enumerator, device_id)?;
+        let endpoint_volume = get_endpoint_volume(&device)?;
+        let volume = unsafe { endpoint_volume.GetMasterVolumeLevelScalar()? };
+        let muted = unsafe { endpoint_volume.GetMute()? }.as_bool();
+        Ok(DeviceVolumeState { volume, muted })
+    })
+}
+
+/// 设置指定输出或输入端点的 Windows 主音量。
+pub fn set_device_volume(device_id: &str, volume: f32) -> Result<DeviceVolumeState> {
+    if !volume.is_finite() {
+        return Err(Error::new(
+            HRESULT::from_win32(87),
+            "设备音量必须是有效数字",
+        ));
+    }
+    let volume = volume.clamp(0.0, 1.0);
+    with_com(|| {
+        let enumerator = create_device_enumerator()?;
+        let device = get_device_by_id(&enumerator, device_id)?;
+        let endpoint_volume = get_endpoint_volume(&device)?;
+        unsafe {
+            endpoint_volume.SetMasterVolumeLevelScalar(
+                volume,
+                &super::notifications::AUDIO_HUB_EVENT_CONTEXT,
+            )?;
+            if volume > 0.0 && endpoint_volume.GetMute()?.as_bool() {
+                endpoint_volume.SetMute(false, &super::notifications::AUDIO_HUB_EVENT_CONTEXT)?;
+            }
+            Ok(DeviceVolumeState {
+                volume: endpoint_volume.GetMasterVolumeLevelScalar()?,
+                muted: endpoint_volume.GetMute()?.as_bool(),
+            })
+        }
+    })
+}
+
+/// 设置指定输出或输入端点的静音状态。
+pub fn set_device_mute(device_id: &str, muted: bool) -> Result<DeviceVolumeState> {
+    with_com(|| {
+        let enumerator = create_device_enumerator()?;
+        let device = get_device_by_id(&enumerator, device_id)?;
+        let endpoint_volume = get_endpoint_volume(&device)?;
+        unsafe {
+            endpoint_volume.SetMute(muted, &super::notifications::AUDIO_HUB_EVENT_CONTEXT)?;
+            Ok(DeviceVolumeState {
+                volume: endpoint_volume.GetMasterVolumeLevelScalar()?,
+                muted: endpoint_volume.GetMute()?.as_bool(),
+            })
+        }
+    })
 }
 
 /// 实际枚举逻辑。
