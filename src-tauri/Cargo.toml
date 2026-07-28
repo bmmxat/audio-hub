@@ -2,6 +2,9 @@
 name = "audio-hub"
 version = "0.2.0"
 edition = "2024"
+description = "A lightweight Windows audio control center"
+license = "MIT"
+repository = "https://github.com/bmmxat/audio-hub"
 
 [lib]
 name = "audio_hub_lib"

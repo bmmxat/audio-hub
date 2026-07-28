@@ -216,3 +216,10 @@ audio-hub/
 ├─ archive/                     # 已归档、未参与编译的实验模块
 └─ src-tauri/tauri.conf.json    # Tauri 窗口和 NSIS 打包配置
 ```
+
+## 开源协议
+
+Audio Hub 使用 [MIT License](LICENSE) 开源。
+
+Equalizer APO、RNNoise 插件及其他第三方组件保留各自的许可证和版权；
+Audio Hub 不捆绑分发这些可选组件。

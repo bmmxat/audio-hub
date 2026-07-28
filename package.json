@@ -1,6 +1,11 @@
 {
   "name": "audio-hub",
   "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bmmxat/audio-hub.git"
+  },
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
