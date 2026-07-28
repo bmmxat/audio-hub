@@ -2,11 +2,23 @@
 
 > 面向 Windows 游戏玩家的轻量级音频控制中心。
 
+> 由 **Juice** 发起，并借助 **OpenAI Codex** 与 **Claude Code** 完成设计、开发与迭代。
+
 Audio Hub 使用 Rust、Tauri 2 和 Windows WASAPI 构建，将应用音量、设备切换、
 应用输出路由、音量场景以及 Equalizer APO 调音功能集中在一个界面中。
 基础音频管理无需安装任何虚拟声卡或第三方插件。
 
 当前版本：`0.2.0`
+
+## 界面预览
+
+### 应用音量与设备切换
+
+![Audio Hub 应用音量与音频设备面板](docs/images/audio-hub-device-panel.png)
+
+### Equalizer APO 全局 EQ
+
+![Audio Hub Equalizer APO 全局 EQ 调节](docs/images/audio-hub-equalizer-apo.png)
 
 ## 功能概览
 
