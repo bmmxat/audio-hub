@@ -542,6 +542,15 @@ pub fn set_app_output_device(pid: u32, device_id: &str) -> Result<()> {
     super::policy_config::set_app_output_device(pid, device_id)
 }
 
+/// 读取特定应用当前保存的输出设备；`None` 表示跟随系统默认输出。
+pub fn get_app_output_device(pid: u32) -> Result<Option<String>> {
+    if pid == 0 {
+        return Ok(None);
+    }
+    let _apartment = ComApartment::initialize(COINIT_APARTMENTTHREADED)?;
+    super::policy_config::get_app_output_device(pid)
+}
+
 fn ensure_known_device(device_id: &str, direction: DeviceDirection) -> Result<()> {
     let devices = enumerate_devices(direction)?;
     if devices.iter().any(|device| device.device_id == device_id) {

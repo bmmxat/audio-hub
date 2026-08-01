@@ -137,6 +137,13 @@ window.AudioAPI = {
         });
     },
 
+    async equalizerApoProcessingState(outputDeviceId, inputDeviceId) {
+        return await window.__TAURI__.core.invoke('equalizer_apo_processing_state', {
+            outputDeviceId: outputDeviceId,
+            inputDeviceId: inputDeviceId,
+        });
+    },
+
     async chooseRnnoisePluginDirectory() {
         return await window.__TAURI__.core.invoke('choose_rnnoise_plugin_directory');
     },
@@ -219,6 +226,65 @@ window.AudioAPI = {
 
     async openEqualizerApoConfigurator() {
         return await window.__TAURI__.core.invoke('open_equalizer_apo_configurator');
+    },
+
+    async voicemeeterStatus() {
+        return await window.__TAURI__.core.invoke('voicemeeter_status');
+    },
+
+    async startVoicemeeter() {
+        return await window.__TAURI__.core.invoke('start_voicemeeter');
+    },
+
+    async showVoicemeeter() {
+        return await window.__TAURI__.core.invoke('show_voicemeeter');
+    },
+
+    async restartVoicemeeterAudioEngine() {
+        return await window.__TAURI__.core.invoke(
+            'restart_voicemeeter_audio_engine',
+        );
+    },
+
+    async shutdownVoicemeeter() {
+        return await window.__TAURI__.core.invoke('shutdown_voicemeeter');
+    },
+
+    async applyVoicemeeterConfiguration(configuration) {
+        return await window.__TAURI__.core.invoke(
+            'apply_voicemeeter_configuration',
+            { configuration: configuration },
+        );
+    },
+
+    async openVoicemeeterDownload() {
+        return await window.__TAURI__.core.invoke('open_voicemeeter_download');
+    },
+
+    async simpleRouteStatus() {
+        return await window.__TAURI__.core.invoke('simple_route_status');
+    },
+
+    async enableSimpleRouteApplication(pid, key, displayName) {
+        return await window.__TAURI__.core.invoke(
+            'enable_simple_route_application',
+            { pid: pid, key: key, displayName: displayName },
+        );
+    },
+
+    async disableSimpleRouteApplication(key, currentPid) {
+        return await window.__TAURI__.core.invoke(
+            'disable_simple_route_application',
+            { key: key, currentPid: currentPid },
+        );
+    },
+
+    async stopAllSimpleRoutes() {
+        return await window.__TAURI__.core.invoke('stop_all_simple_routes');
+    },
+
+    async syncSimpleRouteMonitor() {
+        return await window.__TAURI__.core.invoke('sync_simple_route_monitor');
     },
 
     // ── Profile ────────────────────────────────────────

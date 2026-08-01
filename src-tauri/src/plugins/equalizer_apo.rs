@@ -70,6 +70,12 @@ pub struct EqualizerApoStatus {
     pub rnnoise_plugin_directory: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ApoProcessingState {
+    pub output_eq_active: bool,
+    pub microphone_processing_active: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EqFilterKind {
@@ -357,6 +363,46 @@ pub fn enabled_device_ids(device_ids: Vec<String>) -> Vec<String> {
         .into_iter()
         .filter(|device_id| equalizer_apo_enabled_for_device(device_id))
         .collect()
+}
+
+pub fn processing_state(
+    app_data_dir: &Path,
+    output_device_id: Option<&str>,
+    input_device_id: Option<&str>,
+) -> Result<ApoProcessingState, String> {
+    let store = load_store(app_data_dir)?;
+    if !status(Some(app_data_dir)).connected {
+        return Ok(ApoProcessingState {
+            output_eq_active: false,
+            microphone_processing_active: false,
+        });
+    }
+
+    let requested_ids = output_device_id
+        .into_iter()
+        .chain(input_device_id)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let enabled_ids = enabled_device_ids(requested_ids);
+    let output_eq_active = output_device_id.is_some_and(|device_id| {
+        enabled_ids.iter().any(|enabled| enabled == device_id)
+            && store
+                .endpoints
+                .get(device_id)
+                .is_some_and(|profile| profile.config.enabled)
+    });
+    let microphone_processing_active = input_device_id.is_some_and(|device_id| {
+        enabled_ids.iter().any(|enabled| enabled == device_id)
+            && store.microphones.get(device_id).is_some_and(|profile| {
+                profile.config.enabled
+                    && (profile.config.gain_db.abs() > f32::EPSILON
+                        || profile.config.rnnoise_enabled)
+            })
+    });
+    Ok(ApoProcessingState {
+        output_eq_active,
+        microphone_processing_active,
+    })
 }
 
 pub fn choose_rnnoise_plugin_directory(

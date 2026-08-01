@@ -9,12 +9,14 @@ use audio::{
         ProcessCaptureManager, ProcessCaptureResult, ProcessCaptureStatus, ProcessLoopbackSupport,
     },
     profile::{self, Profile},
+    simple_route::{SimpleRouteManager, SimpleRouteStatus},
     wasapi,
 };
 use plugins::equalizer_apo::{
-    self, EqPresetCatalog, EqualizerApoStatus, GlobalEqConfig, MicrophoneConfig,
-    MicrophoneConfigState,
+    self, ApoProcessingState, EqPresetCatalog, EqualizerApoStatus, GlobalEqConfig,
+    MicrophoneConfig, MicrophoneConfigState,
 };
+use plugins::voicemeeter::{self, VoicemeeterConfiguration, VoicemeeterManager, VoicemeeterStatus};
 use tauri::Manager;
 
 /// 获取默认输出设备的端点 ID。
@@ -113,6 +115,23 @@ fn equalizer_apo_status(app: tauri::AppHandle) -> Result<EqualizerApoStatus, Str
 #[tauri::command]
 fn equalizer_apo_enabled_devices(device_ids: Vec<String>) -> Vec<String> {
     equalizer_apo::enabled_device_ids(device_ids)
+}
+
+#[tauri::command]
+fn equalizer_apo_processing_state(
+    output_device_id: Option<String>,
+    input_device_id: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<ApoProcessingState, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定插件配置目录：{error}"))?;
+    equalizer_apo::processing_state(
+        &app_data_dir,
+        output_device_id.as_deref(),
+        input_device_id.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -275,6 +294,98 @@ fn open_equalizer_apo_configurator() -> Result<(), String> {
     equalizer_apo::open_configurator()
 }
 
+#[tauri::command]
+fn voicemeeter_status(manager: tauri::State<'_, VoicemeeterManager>) -> VoicemeeterStatus {
+    manager.status()
+}
+
+#[tauri::command]
+fn start_voicemeeter(
+    manager: tauri::State<'_, VoicemeeterManager>,
+) -> Result<VoicemeeterStatus, String> {
+    manager.start()
+}
+
+#[tauri::command]
+fn show_voicemeeter(
+    manager: tauri::State<'_, VoicemeeterManager>,
+) -> Result<VoicemeeterStatus, String> {
+    manager.show()
+}
+
+#[tauri::command]
+fn restart_voicemeeter_audio_engine(
+    manager: tauri::State<'_, VoicemeeterManager>,
+) -> Result<VoicemeeterStatus, String> {
+    manager.restart_audio_engine()
+}
+
+#[tauri::command]
+fn apply_voicemeeter_configuration(
+    configuration: VoicemeeterConfiguration,
+    manager: tauri::State<'_, VoicemeeterManager>,
+    simple_route: tauri::State<'_, SimpleRouteManager>,
+) -> Result<VoicemeeterStatus, String> {
+    if simple_route.status().active {
+        return Err("简易流转正在运行，请先停止全部简易流转再修改高级路由。".to_string());
+    }
+    manager.apply(configuration)
+}
+
+#[tauri::command]
+fn open_voicemeeter_download() -> Result<(), String> {
+    voicemeeter::open_download_page()
+}
+
+#[tauri::command]
+fn simple_route_status(manager: tauri::State<'_, SimpleRouteManager>) -> SimpleRouteStatus {
+    manager.status()
+}
+
+#[tauri::command]
+fn enable_simple_route_application(
+    pid: u32,
+    key: String,
+    display_name: String,
+    manager: tauri::State<'_, SimpleRouteManager>,
+    voicemeeter: tauri::State<'_, VoicemeeterManager>,
+) -> Result<SimpleRouteStatus, String> {
+    manager.enable_application(pid, key, display_name, &voicemeeter)
+}
+
+#[tauri::command]
+fn disable_simple_route_application(
+    key: String,
+    current_pid: Option<u32>,
+    manager: tauri::State<'_, SimpleRouteManager>,
+) -> Result<SimpleRouteStatus, String> {
+    manager.disable_application(&key, current_pid)
+}
+
+#[tauri::command]
+fn stop_all_simple_routes(
+    manager: tauri::State<'_, SimpleRouteManager>,
+) -> Result<SimpleRouteStatus, String> {
+    manager.stop_all()
+}
+
+#[tauri::command]
+fn shutdown_voicemeeter(
+    manager: tauri::State<'_, VoicemeeterManager>,
+    simple_route: tauri::State<'_, SimpleRouteManager>,
+) -> Result<VoicemeeterStatus, String> {
+    simple_route.stop_all()?;
+    manager.shutdown()
+}
+
+#[tauri::command]
+fn sync_simple_route_monitor(
+    manager: tauri::State<'_, SimpleRouteManager>,
+    voicemeeter: tauri::State<'_, VoicemeeterManager>,
+) -> Result<SimpleRouteStatus, String> {
+    manager.sync_monitor_to_default(&voicemeeter)
+}
+
 /// Windows 原生音频通知是否已成功启用。
 #[tauri::command]
 fn audio_notifications_available(watcher: tauri::State<'_, AudioNotificationWatcher>) -> bool {
@@ -390,6 +501,12 @@ pub fn run() {
         .setup(|app| {
             app.manage(AudioNotificationWatcher::start(app.handle().clone()));
             app.manage(ProcessCaptureManager::default());
+            app.manage(VoicemeeterManager::default());
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|error| format!("无法确定简易流转配置目录：{error}"))?;
+            app.manage(SimpleRouteManager::load(&app_data_dir));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -409,6 +526,7 @@ pub fn run() {
             open_sound_settings,
             equalizer_apo_status,
             equalizer_apo_enabled_devices,
+            equalizer_apo_processing_state,
             choose_rnnoise_plugin_directory,
             get_global_eq,
             set_global_eq,
@@ -423,6 +541,18 @@ pub fn run() {
             disconnect_equalizer_apo,
             open_equalizer_apo_download,
             open_equalizer_apo_configurator,
+            voicemeeter_status,
+            start_voicemeeter,
+            show_voicemeeter,
+            restart_voicemeeter_audio_engine,
+            shutdown_voicemeeter,
+            apply_voicemeeter_configuration,
+            open_voicemeeter_download,
+            simple_route_status,
+            enable_simple_route_application,
+            disable_simple_route_application,
+            stop_all_simple_routes,
+            sync_simple_route_monitor,
             audio_notifications_available,
             process_loopback_support,
             process_capture_status,

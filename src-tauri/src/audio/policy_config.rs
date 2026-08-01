@@ -111,6 +111,28 @@ impl PolicyFactory {
         hr.ok()
     }
 
+    unsafe fn get_persisted_default(
+        &self,
+        pid: u32,
+        flow: EDataFlow,
+        role: ERole,
+    ) -> windows::core::Result<Option<String>> {
+        let mut value = HSTRING::new();
+        let result = unsafe {
+            ((**self.0).get_persisted)(
+                self.0 as *mut _ as *mut core::ffi::c_void,
+                pid,
+                flow,
+                role,
+                &mut value as *mut HSTRING as *mut *mut core::ffi::c_void,
+            )
+        };
+        if result.is_err() || value.is_empty() {
+            return Ok(None);
+        }
+        Ok(unpack_device_id(&value.to_string_lossy(), flow))
+    }
+
     /// 清除所有 per-app 默认端点设置。
     #[allow(dead_code)]
     unsafe fn clear_all_persisted(&self) -> windows::core::Result<()> {
@@ -148,6 +170,20 @@ fn format_device_id(device_id: &str, flow: EDataFlow) -> String {
         DEVINTERFACE_AUDIO_CAPTURE
     };
     format!("{MMDEVAPI_TOKEN}{device_id}{suffix}")
+}
+
+fn unpack_device_id(device_id: &str, flow: EDataFlow) -> Option<String> {
+    let suffix = if flow == eRender {
+        DEVINTERFACE_AUDIO_RENDER
+    } else {
+        DEVINTERFACE_AUDIO_CAPTURE
+    };
+    device_id
+        .strip_prefix(MMDEVAPI_TOKEN)
+        .and_then(|value| value.strip_suffix(suffix))
+        .or(Some(device_id))
+        .map(str::to_string)
+        .filter(|value| !value.is_empty())
 }
 
 // ── IPolicyConfigWin7（EarTrumpet 同款，12 方法）────────
@@ -264,4 +300,21 @@ pub fn set_app_output_device(pid: u32, device_id: &str) -> windows::core::Result
         factory.set_persisted_default(pid, eRender, eMultimedia, device_id)?;
     }
     Ok(())
+}
+
+pub fn get_app_output_device(pid: u32) -> windows::core::Result<Option<String>> {
+    let factory = get_factory()?;
+    unsafe { factory.get_persisted_default(pid, eRender, eMultimedia) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unpacks_render_device_id() {
+        let id = "{0.0.0.00000000}.{12345678-1234-1234-1234-123456789abc}";
+        let packed = format_device_id(id, eRender);
+        assert_eq!(unpack_device_id(&packed, eRender).as_deref(), Some(id));
+    }
 }

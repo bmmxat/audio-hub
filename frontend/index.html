@@ -62,6 +62,22 @@
                 <h2>应用音量</h2>
                 <span class="session-count-badge" id="session-count">—</span>
                 <div class="header-actions">
+                    <div class="voicemeeter-entry-wrapper">
+                        <button id="voicemeeter-btn" class="btn plugin-entry-btn"
+                            title="选择简易流转或高级路由工作流" aria-haspopup="menu"
+                            aria-expanded="false">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                                stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round">
+                                <path d="M4 7h9"/><path d="M11 4l3 3-3 3"/>
+                                <path d="M20 17h-9"/><path d="M13 14l-3 3 3 3"/>
+                            </svg>
+                            <span id="voicemeeter-btn-label">声音流转</span>
+                            <span class="plugin-entry-chevron" aria-hidden="true">▾</span>
+                        </button>
+                        <div id="voicemeeter-mode-menu" class="voicemeeter-mode-menu hidden"
+                            role="menu"></div>
+                    </div>
                     <button id="global-eq-btn" class="btn plugin-entry-btn" title="通过 Equalizer APO 调节输出 EQ 与麦克风处理">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
                             stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -72,30 +88,34 @@
                         </svg>
                         <span>Equalizer APO</span>
                     </button>
-                    <span class="toolbar-divider"></span>
-                    <div class="profile-toolbar" id="profile-toolbar">
-                        <span class="scene-label">场景</span>
-                        <select id="profile-select" class="profile-select" title="选择场景">
-                        </select>
-                        <button id="profile-new-btn" class="btn toolbar-icon-btn"
-                            title="新建场景" aria-label="新建场景">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-                                stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-                                <line x1="12" y1="5" x2="12" y2="19"/>
-                                <line x1="5" y1="12" x2="19" y2="12"/>
-                            </svg>
-                        </button>
-                        <button id="profile-delete-btn" class="btn toolbar-icon-btn danger"
-                            title="删除选中场景" aria-label="删除选中场景">
+                    <div class="volume-preset-wrapper">
+                        <button id="volume-preset-btn" class="btn volume-preset-entry"
+                            title="管理应用音量和静音预设" aria-haspopup="menu"
+                            aria-expanded="false">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
                                 stroke="currentColor" stroke-width="2" stroke-linecap="round"
                                 stroke-linejoin="round">
-                                <polyline points="3 6 5 6 21 6"/>
-                                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
-                                <path d="M10 11v6"/><path d="M14 11v6"/>
-                                <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+                                <path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"/>
                             </svg>
+                            <span>音量预设</span>
+                            <span class="plugin-entry-chevron" aria-hidden="true">▾</span>
                         </button>
+                        <div id="volume-preset-menu" class="volume-preset-menu hidden" role="menu">
+                            <div class="volume-preset-heading">
+                                <strong>音量预设</strong>
+                                <small>仅保存应用音量与静音</small>
+                            </div>
+                            <select id="profile-select" class="profile-select"
+                                title="选择音量预设"></select>
+                            <button id="profile-save-btn" class="btn volume-preset-primary">
+                                保存当前音量
+                            </button>
+                            <div class="volume-preset-actions">
+                                <button id="profile-new-btn" class="btn">新建预设</button>
+                                <button id="profile-delete-btn" class="btn danger">删除预设</button>
+                            </div>
+                            <p>调整应用音量不会自动覆盖预设。</p>
+                        </div>
                     </div>
                     <span class="badge hidden-badge" id="hidden-badge" title="点击显示/隐藏">👁️ 隐藏 0</span>
                 </div>
@@ -163,6 +183,22 @@
                 <button id="global-eq-close-btn" class="btn btn-icon" title="关闭">✕</button>
             </div>
             <div id="global-eq-content"></div>
+        </div>
+    </div>
+
+    <!-- VoiceMeeter 路由工作流 -->
+    <div id="voicemeeter-modal" class="voicemeeter-modal hidden">
+        <div class="voicemeeter-card">
+            <div class="eq-header">
+                <div class="eq-title-row">
+                    <h2>VoiceMeeter 路由工作流</h2>
+                    <span class="eq-help header-help" tabindex="0" role="note"
+                        aria-label="VoiceMeeter 流转说明"
+                        data-tooltip="VoiceMeeter 必须保持运行，但可以隐藏在系统托盘。Audio Hub 只控制常用路由参数，不会安装、捆绑或替代 VoiceMeeter。">?</span>
+                </div>
+                <button id="voicemeeter-close-btn" class="btn btn-icon" title="关闭">✕</button>
+            </div>
+            <div id="voicemeeter-content"></div>
         </div>
     </div>
 

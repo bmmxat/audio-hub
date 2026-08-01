@@ -20,7 +20,7 @@ const state = {
     notificationUnlisteners: [],
     pendingSessionRefresh: false,
     pendingDeviceRefresh: false,
-    autoSaveTimer: null,
+    volumePresetMenuOpen: false,
     captureStatus: {
         supported: false,
         windows_build: 0,
@@ -56,6 +56,29 @@ const state = {
     autostartBusy: false,
     autostartEnabled: false,
     autostartMessage: null,
+    voicemeeterStatus: null,
+    voicemeeterConfiguration: null,
+    voicemeeterBusy: false,
+    voicemeeterMessage: null,
+    voicemeeterSourceManagerTarget: null,
+    voicemeeterDspOpen: false,
+    voicemeeterMode: localStorage.getItem('audio-hub-voicemeeter-mode') || 'simple',
+    voicemeeterModeMenuOpen: false,
+    simpleRouteBusy: false,
+    simpleRouteMonitorSyncBusy: false,
+    simpleRouteStatus: {
+        active: false,
+        applications: [],
+        physical_microphone_name: null,
+        monitor_device_name: null,
+        virtual_microphone_id: null,
+        voicemeeter_input_id: null,
+        recovery_pending: false,
+    },
+    voicemeeterApoProcessing: {
+        output_eq_active: false,
+        microphone_processing_active: false,
+    },
 };
 
 // ── DOM 引用 ─────────────────────────────────────────
@@ -73,7 +96,10 @@ const dom = {
     sessionList: $('#session-list'),
     sessionCount: $('#session-count'),
     hiddenBadge: $('#hidden-badge'),
+    volumePresetBtn: $('#volume-preset-btn'),
+    volumePresetMenu: $('#volume-preset-menu'),
     profileSelect: $('#profile-select'),
+    profileSaveBtn: $('#profile-save-btn'),
     profileNewBtn: $('#profile-new-btn'),
     profileDeleteBtn: $('#profile-delete-btn'),
     statusText: $('#status-text'),
@@ -85,6 +111,12 @@ const dom = {
     globalEqModal: $('#global-eq-modal'),
     globalEqCloseBtn: $('#global-eq-close-btn'),
     globalEqContent: $('#global-eq-content'),
+    voicemeeterBtn: $('#voicemeeter-btn'),
+    voicemeeterBtnLabel: $('#voicemeeter-btn-label'),
+    voicemeeterModeMenu: $('#voicemeeter-mode-menu'),
+    voicemeeterModal: $('#voicemeeter-modal'),
+    voicemeeterCloseBtn: $('#voicemeeter-close-btn'),
+    voicemeeterContent: $('#voicemeeter-content'),
 };
 
 // ── 生命周期 ─────────────────────────────────────────
@@ -95,6 +127,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadAllData(true);
     await refreshCaptureStatus();
     setupEventListeners();
+    await maybeStartVoicemeeter();
+    await refreshSimpleRouteIntegration();
     const notificationsAvailable = await setupAudioNotifications();
     startAutoRefresh(notificationsAvailable ? 30000 : 3000);
     startCaptureStatusPolling();
@@ -163,6 +197,10 @@ function renderAll() {
 
 // ── 会话列表（主体）──────────────────────────────────
 function renderSessionList() {
+    dom.sessionList.classList.toggle(
+        'simple-route-enabled',
+        simpleRouteButtonsAvailable(),
+    );
     if (state.loading) {
         dom.sessionList.innerHTML = Array(5).fill(
             '<div class="skeleton skeleton-row"></div>',
@@ -173,8 +211,13 @@ function renderSessionList() {
     }
 
     // 分离可见和隐藏
-    const visible = state.sessions.filter((s) => !state.hiddenSessions.has(sessionKey(s)));
-    const hidden = state.sessions.filter((s) => state.hiddenSessions.has(sessionKey(s)));
+    const orderedSessions = [...state.sessions].sort(compareAudioSessions);
+    const visible = orderedSessions.filter(
+        (session) => !state.hiddenSessions.has(sessionKey(session)),
+    );
+    const hidden = orderedSessions.filter(
+        (session) => state.hiddenSessions.has(sessionKey(session)),
+    );
 
     dom.sessionCount.textContent = `共 ${visible.length} 个`;
 
@@ -218,6 +261,21 @@ function renderSessionList() {
     dom.sessionList.innerHTML = html;
 }
 
+function compareAudioSessions(left, right) {
+    if (left.pid === 0 && right.pid !== 0) return -1;
+    if (right.pid === 0 && left.pid !== 0) return 1;
+    const byName = String(left.display_name || '').localeCompare(
+        String(right.display_name || ''),
+        'zh-CN',
+        { numeric: true, sensitivity: 'base' },
+    );
+    if (byName !== 0) return byName;
+    return sessionKey(left).localeCompare(sessionKey(right), 'zh-CN', {
+        numeric: true,
+        sensitivity: 'base',
+    });
+}
+
 function renderSessionItem(session, isHidden) {
     const volPct = Math.round(session.volume * 100);
     const muteCls = session.muted ? 'mute-btn muted' : 'mute-btn';
@@ -230,6 +288,29 @@ function renderSessionItem(session, isHidden) {
     const icon = sessionIcon(session.display_name);
     const hiddenCls = isHidden ? ' hidden-item' : '';
     const stableKey = sessionKey(session);
+    const simpleRouteActive = state.simpleRouteStatus.applications.some(
+        (application) => application.key === stableKey,
+    );
+    const simpleRouteControl = simpleRouteButtonsAvailable()
+        ? session.pid === 0
+            ? '<span class="simple-route-placeholder"></span>'
+            : `
+                <button class="simple-route-btn ${simpleRouteActive ? 'active' : ''}"
+                    data-simple-route data-pid="${session.pid}"
+                    data-session-key="${escAttr(stableKey)}"
+                    title="${simpleRouteActive
+        ? '停止将此应用和物理麦克风传到虚拟麦克风'
+        : '将此应用和物理麦克风传到默认虚拟麦克风'}"
+                    ${state.simpleRouteBusy ? 'disabled' : ''}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                        stroke-linejoin="round">
+                        <path d="M4 7h9"/><path d="M11 4l3 3-3 3"/>
+                        <path d="M20 17h-9"/><path d="M13 14l-3 3 3 3"/>
+                    </svg>
+                    <span>${simpleRouteActive ? '流转中' : '传到麦克风'}</span>
+                </button>`
+        : '';
     const currentDev = state.sessionDevices[stableKey] || '';
     const currentDevName = currentDev
         ? state.outputDevices.find((d) => d.device_id === currentDev)?.name || '设备已断开'
@@ -273,7 +354,11 @@ function renderSessionItem(session, isHidden) {
             </div>
             <span class="volume-pct" data-pid="${session.pid}">${volPct}%</span>
             <button class="${muteCls}" data-pid="${session.pid}">${muteSvg}</button>
-            ${session.pid === 0 ? '<span class="route-label-fixed">系统默认</span>' : `
+            ${session.pid === 0
+        ? '<span class="route-label-fixed">系统默认</span>'
+        : simpleRouteActive
+            ? '<span class="route-label-fixed simple-managed">简易流转管理</span>'
+            : `
             <div class="route-wrapper" data-pid="${session.pid}">
                 <button class="route-trigger${currentDev ? ' locked' : ''}" data-pid="${session.pid}" title="输出设备${currentDev ? '（已锁定）' : ''}">
                     ${currentDev ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/></svg>' : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>'}
@@ -284,6 +369,7 @@ function renderSessionItem(session, isHidden) {
                     ${devOpts}
                 </div>
             </div>`}
+            ${simpleRouteControl}
             <button class="capture-btn${isRecording ? ' recording' : ''}"
                     data-pid="${session.pid}"
                     title="${escAttr(captureTitle)}"
@@ -372,6 +458,1258 @@ function globalEqEffectivePreamp(config) {
             .map((band) => Number(band.gain_db)),
     );
     return Math.min(Number(config.preamp_db), -largestBoost);
+}
+
+// ── VoiceMeeter 流转引擎 ─────────────────────────────
+function syncSimpleRouteSessionDevices(previousStatus, nextStatus) {
+    const nextKeys = new Set(
+        (nextStatus?.applications || []).map((application) => application.key),
+    );
+    for (const application of previousStatus?.applications || []) {
+        if (nextKeys.has(application.key)) continue;
+        if (application.original_output_device_id) {
+            state.sessionDevices[application.key] = application.original_output_device_id;
+        } else {
+            delete state.sessionDevices[application.key];
+        }
+    }
+    if (nextStatus?.voicemeeter_input_id) {
+        for (const application of nextStatus.applications || []) {
+            state.sessionDevices[application.key] = nextStatus.voicemeeter_input_id;
+        }
+    }
+    saveSessionDevices();
+}
+
+async function refreshSimpleRouteIntegration() {
+    const previousStatus = state.simpleRouteStatus;
+    try {
+        const [voicemeeterStatus, simpleRouteStatus] = await Promise.all([
+            AudioAPI.voicemeeterStatus(),
+            AudioAPI.simpleRouteStatus(),
+        ]);
+        state.voicemeeterStatus = voicemeeterStatus;
+        state.voicemeeterConfiguration =
+            structuredClone(voicemeeterStatus.configuration);
+        state.simpleRouteStatus = simpleRouteStatus;
+        syncSimpleRouteSessionDevices(previousStatus, simpleRouteStatus);
+        if (simpleRouteStatus.recovery_pending) {
+            setStatus('检测到上次未结束的简易流转，可从“声音流转”菜单恢复或全部停止');
+        }
+        if (
+            simpleRouteStatus.active &&
+            voicemeeterStatus.connected &&
+            simpleRouteStatus.monitor_device_name !== state.defaultOutput?.name
+        ) {
+            await syncSimpleRouteMonitorToDefault();
+        }
+    } catch (err) {
+        console.warn('无法读取 VoiceMeeter 简易流转状态', err);
+    }
+    renderVoicemeeterEntry();
+    renderSessionList();
+}
+
+async function syncSimpleRouteMonitorToDefault() {
+    if (!state.simpleRouteStatus.active || !state.voicemeeterStatus?.connected) return;
+    if (state.simpleRouteBusy) {
+        setTimeout(syncSimpleRouteMonitorToDefault, 200);
+        return;
+    }
+    if (state.simpleRouteMonitorSyncBusy) return;
+    state.simpleRouteMonitorSyncBusy = true;
+    const previousMonitor = state.simpleRouteStatus.monitor_device_name;
+    try {
+        const nextStatus = await AudioAPI.syncSimpleRouteMonitor();
+        state.simpleRouteStatus = nextStatus;
+        const nextMonitor = nextStatus.monitor_device_name || '默认物理扬声器';
+        if (nextMonitor !== previousMonitor) {
+            setStatus(`默认输出已切换，本地监听已同步到：${nextMonitor}`);
+        }
+    } catch (err) {
+        const currentMonitor = previousMonitor || '原物理扬声器';
+        setStatus(`默认输出已切换，但 A1 保持在 ${currentMonitor}：${err}`);
+    } finally {
+        state.simpleRouteMonitorSyncBusy = false;
+        renderVoicemeeterEntry();
+    }
+}
+
+function simpleRouteButtonsAvailable() {
+    return state.voicemeeterMode === 'simple'
+        && Boolean(state.voicemeeterStatus?.connected);
+}
+
+function renderVoicemeeterEntry() {
+    const count = state.simpleRouteStatus.applications.length;
+    const connected = Boolean(state.voicemeeterStatus?.connected);
+    const installed = Boolean(state.voicemeeterStatus?.installed);
+    dom.voicemeeterBtn.classList.toggle('active', connected);
+    dom.voicemeeterBtn.classList.toggle('offline', !connected);
+    dom.voicemeeterBtn.setAttribute(
+        'aria-expanded',
+        state.voicemeeterModeMenuOpen ? 'true' : 'false',
+    );
+    dom.voicemeeterBtnLabel.textContent = !connected
+        ? '未启用'
+        : state.voicemeeterMode === 'simple'
+            ? count > 0
+                ? `简易模式 · ${count}`
+                : '简易模式'
+            : '高级模式';
+
+    const simpleDescription = !installed
+        ? '安装 VoiceMeeter 后可用'
+        : !connected
+            ? 'VoiceMeeter 未启动，点击启用'
+            : count > 0
+                ? `本地监听：${esc(state.simpleRouteStatus.monitor_device_name || '默认物理扬声器')}`
+                : '使用当前默认物理扬声器进行本地监听';
+    dom.voicemeeterModeMenu.innerHTML = `
+        <button class="vm-mode-option ${connected && state.voicemeeterMode === 'simple' ? 'selected' : ''}"
+            data-vm-entry-action="${connected ? 'select-simple' : installed ? 'start-simple' : 'setup'}">
+            <span class="vm-mode-option-icon">↝</span>
+            <span><strong>${connected ? '简易模式' : '开启简易模式'}</strong><small>${simpleDescription}</small></span>
+            ${connected && state.voicemeeterMode === 'simple' ? '<span class="vm-mode-check">✓</span>' : ''}
+        </button>
+        <button class="vm-mode-option ${connected && state.voicemeeterMode === 'advanced' ? 'selected' : ''}"
+            data-vm-entry-action="advanced">
+            <span class="vm-mode-option-icon">⌘</span>
+            <span><strong>${connected ? '高级模式' : '开启高级模式'}</strong><small>打开完整 VoiceMeeter 路由工作流</small></span>
+            ${connected && state.voicemeeterMode === 'advanced' ? '<span class="vm-mode-check">✓</span>' : ''}
+        </button>
+        ${connected ? `
+            <button class="vm-mode-stop" data-vm-entry-action="close-flow"
+                ${state.simpleRouteBusy ? 'disabled' : ''}>
+                关闭声音流转并退出 VoiceMeeter
+            </button>` : ''}`;
+    dom.voicemeeterModeMenu.classList.toggle(
+        'hidden',
+        !state.voicemeeterModeMenuOpen,
+    );
+}
+
+async function runVoicemeeterEntryAction(action) {
+    if (state.simpleRouteBusy) return;
+    if (action === 'select-simple') {
+        state.voicemeeterMode = 'simple';
+        localStorage.setItem('audio-hub-voicemeeter-mode', 'simple');
+        state.voicemeeterModeMenuOpen = false;
+        renderVoicemeeterEntry();
+        renderSessionList();
+        return;
+    }
+    if (action === 'start-simple') {
+        state.simpleRouteBusy = true;
+        renderVoicemeeterEntry();
+        try {
+            state.voicemeeterStatus = await AudioAPI.startVoicemeeter();
+            state.voicemeeterMode = 'simple';
+            localStorage.setItem('audio-hub-voicemeeter-mode', 'simple');
+            state.voicemeeterModeMenuOpen = false;
+            setStatus('VoiceMeeter 已启动，可在应用列表中开启简易流转');
+        } catch (err) {
+            setStatus(`VoiceMeeter 启动失败：${err}`);
+        } finally {
+            state.simpleRouteBusy = false;
+            await refreshSimpleRouteIntegration();
+        }
+        return;
+    }
+    if (action === 'setup') {
+        state.voicemeeterModeMenuOpen = false;
+        renderVoicemeeterEntry();
+        await openVoicemeeterEditor();
+        return;
+    }
+    if (action === 'advanced') {
+        if (state.simpleRouteStatus.active && !confirm(
+            '当前仍有应用正在使用简易模式。是否恢复应用输出和默认麦克风，然后进入高级模式？',
+        )) return;
+        if (state.simpleRouteStatus.active) {
+            await stopAllSimpleRoutes();
+            if (state.simpleRouteStatus.active) return;
+        }
+        if (!state.voicemeeterStatus?.installed) {
+            state.voicemeeterMode = 'advanced';
+            localStorage.setItem('audio-hub-voicemeeter-mode', 'advanced');
+            state.voicemeeterModeMenuOpen = false;
+            await openVoicemeeterEditor();
+            return;
+        }
+        if (!state.voicemeeterStatus?.connected) {
+            state.simpleRouteBusy = true;
+            renderVoicemeeterEntry();
+            try {
+                state.voicemeeterStatus = await AudioAPI.startVoicemeeter();
+                state.voicemeeterConfiguration =
+                    structuredClone(state.voicemeeterStatus.configuration);
+            } catch (err) {
+                setStatus(`VoiceMeeter 启动失败：${err}`);
+                state.simpleRouteBusy = false;
+                renderVoicemeeterEntry();
+                return;
+            }
+            state.simpleRouteBusy = false;
+        }
+        state.voicemeeterMode = 'advanced';
+        localStorage.setItem('audio-hub-voicemeeter-mode', 'advanced');
+        state.voicemeeterModeMenuOpen = false;
+        renderVoicemeeterEntry();
+        renderSessionList();
+        await openVoicemeeterEditor();
+        return;
+    }
+    if (action === 'close-flow') await shutdownVoicemeeterFlow();
+}
+
+async function maybeStartVoicemeeter() {
+    if (localStorage.getItem('audio-hub-voicemeeter-autostart') !== 'true') return;
+    try {
+        state.voicemeeterStatus = await AudioAPI.startVoicemeeter();
+        state.voicemeeterConfiguration =
+            structuredClone(state.voicemeeterStatus.configuration);
+        await refreshVoicemeeterApoProcessing();
+        setStatus('VoiceMeeter 已在后台启动');
+    } catch (err) {
+        setStatus(`VoiceMeeter 后台启动失败：${err}`);
+    }
+}
+
+async function openVoicemeeterEditor() {
+    if (state.voicemeeterBusy) return;
+    state.voicemeeterBusy = true;
+    state.voicemeeterMessage = null;
+    state.voicemeeterSourceManagerTarget = null;
+    state.voicemeeterDspOpen = false;
+    dom.voicemeeterModal.classList.remove('hidden');
+    dom.voicemeeterContent.innerHTML =
+        '<div class="plugin-loading">正在连接 VoiceMeeter…</div>';
+    try {
+        state.voicemeeterStatus = await AudioAPI.voicemeeterStatus();
+        state.voicemeeterConfiguration =
+            structuredClone(state.voicemeeterStatus.configuration);
+        await refreshVoicemeeterApoProcessing();
+    } catch (err) {
+        state.voicemeeterStatus = null;
+        state.voicemeeterConfiguration = null;
+        state.voicemeeterMessage = `状态读取失败：${err}`;
+    } finally {
+        state.voicemeeterBusy = false;
+        renderVoicemeeterEditor();
+        renderVoicemeeterEntry();
+        renderSessionList();
+    }
+}
+
+function closeVoicemeeterEditor() {
+    state.voicemeeterSourceManagerTarget = null;
+    dom.voicemeeterModal.classList.add('hidden');
+}
+
+function voicemeeterMonitorDevices() {
+    return state.outputDevices.filter(
+        (device) => !/voicemeeter|vb-audio voice|vb-audio voicemeeter/i.test(device.name),
+    );
+}
+
+function voicemeeterPhysicalInputDevices() {
+    return state.inputDevices.filter(
+        (device) => !/voicemeeter|vb-audio|virtual|steam streaming/i.test(device.name),
+    );
+}
+
+function findVoicemeeterDevice(devices, name) {
+    const requested = String(name || '').trim().toLocaleLowerCase('zh-CN');
+    if (!requested) return null;
+    return devices.find(
+        (device) => device.name.trim().toLocaleLowerCase('zh-CN') === requested,
+    ) || null;
+}
+
+async function refreshVoicemeeterApoProcessing() {
+    const configuration = state.voicemeeterConfiguration;
+    if (!configuration) {
+        state.voicemeeterApoProcessing = {
+            output_eq_active: false,
+            microphone_processing_active: false,
+        };
+        return;
+    }
+    const outputDevice = findVoicemeeterDevice(
+        state.outputDevices,
+        configuration.monitor_device_name,
+    );
+    const inputDevice = findVoicemeeterDevice(
+        state.inputDevices,
+        configuration.physical_input?.device_name,
+    );
+    try {
+        state.voicemeeterApoProcessing = await AudioAPI.equalizerApoProcessingState(
+            outputDevice?.device_id || null,
+            inputDevice?.device_id || null,
+        );
+    } catch {
+        state.voicemeeterApoProcessing = {
+            output_eq_active: false,
+            microphone_processing_active: false,
+        };
+    }
+}
+
+function voicemeeterPlaybackDevices() {
+    const devices = state.outputDevices.filter(
+        (device) => /voicemeeter|vb-audio voicemeeter/i.test(device.name),
+    );
+    const aux = devices.find(
+        (device) => /voicemeeter\s+aux\s+input/i.test(device.name),
+    ) || devices.find(
+        (device) => /aux.*(?:input|vaio)|(?:input|vaio).*aux/i.test(device.name),
+    ) || null;
+    const main = devices.find(
+        (device) => /voicemeeter\s+input\s*\(/i.test(device.name)
+            && device.device_id !== aux?.device_id,
+    ) || devices.find(
+        (device) => /(?:input|vaio)/i.test(device.name)
+            && !/aux|vaio3/i.test(device.name),
+    ) || null;
+    return { main, aux };
+}
+
+function voicemeeterApplicationSessions() {
+    const sessions = new Map();
+    for (const session of state.sessions) {
+        if (session.pid === 0) continue;
+        const key = sessionKey(session);
+        if (!sessions.has(key)) sessions.set(key, session);
+    }
+    return [...sessions.values()].sort(compareAudioSessions);
+}
+
+function voicemeeterRoutedSessions(device) {
+    if (!device) return [];
+    return voicemeeterApplicationSessions().filter(
+        (session) => state.sessionDevices[sessionKey(session)] === device.device_id,
+    );
+}
+
+function formatVoicemeeterGain(value) {
+    const numeric = Number(value || 0);
+    return `${numeric > 0 ? '+' : ''}${numeric.toFixed(1)} dB`;
+}
+
+function getVoicemeeterField(path) {
+    return path.split('.').reduce(
+        (value, key) => value?.[key],
+        state.voicemeeterConfiguration,
+    );
+}
+
+function setVoicemeeterField(path, value) {
+    const keys = path.split('.');
+    let target = state.voicemeeterConfiguration;
+    for (const key of keys.slice(0, -1)) {
+        if (!target?.[key]) return false;
+        target = target[key];
+    }
+    target[keys.at(-1)] = value;
+    return true;
+}
+
+function voicemeeterSessionSummary(sessions) {
+    if (sessions.length === 0) return '尚未添加应用';
+    const names = sessions
+        .slice(0, 2)
+        .map((session) => esc(session.display_name))
+        .join('、');
+    return `${names}${sessions.length > 2 ? ` 等 ${sessions.length} 个应用` : ''}`;
+}
+
+function renderVoicemeeterMix(key, title, device, sessions, mix) {
+    const isMain = key === 'main_mix';
+    const virtualBus = isMain ? 'B1' : 'B2';
+    const inputLabel = isMain ? 'VAIO' : 'AUX';
+    const monitorName = state.voicemeeterConfiguration?.monitor_device_name
+        || '尚未选择物理扬声器';
+    const virtualMicrophoneName = isMain
+        ? 'VoiceMeeter Out B1'
+        : 'VoiceMeeter Out B2 / AUX Output';
+    const missingDevice = !device;
+    const activeRoutes = Number(mix.monitor_enabled)
+        + Number(mix.virtual_microphone_enabled);
+    return `
+        <article class="vm-mix-card ${activeRoutes > 0 ? 'connected' : ''}
+            ${mix.input_muted ? 'muted' : ''}">
+            <div class="vm-mix-header">
+                <div>
+                    <span class="vm-node-step">${inputLabel} · 虚拟输入</span>
+                    <strong>${title}</strong>
+                </div>
+                <span class="vm-technical-tag">${inputLabel} → ${virtualBus}</span>
+            </div>
+            <button class="vm-mix-source ${sessions.length > 0 ? 'active' : ''}
+                ${state.voicemeeterSourceManagerTarget === key ? 'selected' : ''}"
+                data-vm-action="open-source-manager" data-vm-target="${key}"
+                aria-label="为${title}选择应用" ${missingDevice ? 'disabled' : ''}>
+                <span aria-hidden="true">▦</span>
+                <div>
+                    <strong>${voicemeeterSessionSummary(sessions)}</strong>
+                    <small>${missingDevice
+        ? '未检测到对应的 VoiceMeeter 播放设备'
+        : `点击选择应用 · ${esc(device.name)}`}</small>
+                </div>
+                <span class="vm-mix-source-arrow" aria-hidden="true">›</span>
+            </button>
+            ${missingDevice ? `
+                <p class="vm-inline-warning">
+                    无法添加应用，请在 Windows 中确认该虚拟播放设备已启用。
+                </p>` : ''}
+            <label class="vm-control-label">
+                <span>混音输入增益</span>
+                <span class="voicemeeter-gain-value"
+                    data-vm-value="${key}.input_gain_db">
+                    ${formatVoicemeeterGain(mix.input_gain_db)}
+                </span>
+            </label>
+            <input type="range" min="-24" max="12" step="0.5"
+                value="${Number(mix.input_gain_db)}"
+                data-vm-field="${key}.input_gain_db">
+            <button class="btn vm-mute-action ${mix.input_muted ? 'active' : ''}"
+                data-vm-action="toggle-field"
+                data-vm-field="${key}.input_muted"
+                data-vm-on="${title}已静音"
+                data-vm-off="${title}已取消静音">
+                ${mix.input_muted ? '已静音，点击恢复' : '静音此混音'}
+            </button>
+            <div class="vm-route-pair">
+                <button class="btn vm-route-action
+                    ${mix.monitor_enabled ? 'connected' : ''}"
+                    data-vm-action="toggle-field"
+                    data-vm-field="${key}.monitor_enabled"
+                    data-vm-on="${title}已输出到 ${escAttr(monitorName)}"
+                    data-vm-off="${title}已停止输出到物理扬声器"
+                    aria-label="输出到物理扬声器，A1 当前绑定 ${escAttr(monitorName)}"
+                    title="A1 当前绑定：${escAttr(monitorName)}">
+                    <span class="vm-route-action-dot"></span>
+                    <span class="vm-route-action-content">
+                        <strong>输出到物理扬声器</strong>
+                        <small>A1 · ${esc(monitorName)}</small>
+                    </span>
+                </button>
+                <button class="btn vm-route-action
+                    ${mix.virtual_microphone_enabled ? 'connected' : ''}"
+                    data-vm-action="toggle-field"
+                    data-vm-field="${key}.virtual_microphone_enabled"
+                    data-vm-on="${title}已输出到虚拟麦克风 ${virtualBus}"
+                    data-vm-off="${title}已停止输出到虚拟麦克风 ${virtualBus}"
+                    aria-label="输出到虚拟麦克风 ${virtualBus}">
+                    <span class="vm-route-action-dot"></span>
+                    <span class="vm-route-action-content">
+                        <strong>输出到虚拟麦克风</strong>
+                        <small>${virtualBus} · ${virtualMicrophoneName}</small>
+                    </span>
+                </button>
+            </div>
+            <div class="vm-bus-control">
+                <label class="vm-control-label">
+                    <span>虚拟麦克风输出增益（${virtualBus}）</span>
+                    <span class="voicemeeter-gain-value"
+                        data-vm-value="${key}.virtual_microphone_gain_db">
+                        ${formatVoicemeeterGain(mix.virtual_microphone_gain_db)}
+                    </span>
+                </label>
+                <input type="range" min="-24" max="12" step="0.5"
+                    value="${Number(mix.virtual_microphone_gain_db)}"
+                    data-vm-field="${key}.virtual_microphone_gain_db">
+                <button class="btn vm-compact-mute
+                    ${mix.virtual_microphone_muted ? 'active' : ''}"
+                    data-vm-action="toggle-field"
+                    data-vm-field="${key}.virtual_microphone_muted"
+                    data-vm-on="虚拟麦克风 ${virtualBus} 已静音"
+                    data-vm-off="虚拟麦克风 ${virtualBus} 已取消静音">
+                    ${mix.virtual_microphone_muted
+        ? `虚拟麦克风已静音（${virtualBus}）`
+        : `静音虚拟麦克风（${virtualBus}）`}
+                </button>
+            </div>
+        </article>`;
+}
+
+function formatVoicemeeterFrequency(value) {
+    const frequency = Number(value || 0);
+    return frequency >= 1000
+        ? `${(frequency / 1000).toFixed(frequency >= 10_000 ? 0 : 1)} kHz`
+        : `${Math.round(frequency)} Hz`;
+}
+
+function renderVoicemeeterEq(path, equalizer, title, description) {
+    if (!equalizer) return '';
+    const bands = equalizer.bands.map((band, index) => {
+        const bandPath = `${path}.bands.${index}`;
+        return `
+            <div class="vm-eq-band ${band.enabled ? '' : 'disabled'}">
+                <label class="vm-eq-band-heading">
+                    <input type="checkbox" data-vm-field="${bandPath}.enabled"
+                        ${band.enabled ? 'checked' : ''}>
+                    <span>${formatVoicemeeterFrequency(band.frequency_hz)}</span>
+                </label>
+                <span class="voicemeeter-gain-value"
+                    data-vm-value="${bandPath}.gain_db">
+                    ${formatVoicemeeterGain(band.gain_db)}
+                </span>
+                <input type="range" min="-12" max="12" step="0.5"
+                    value="${Number(band.gain_db)}"
+                    data-vm-field="${bandPath}.gain_db"
+                    ${band.enabled ? '' : 'disabled'}>
+            </div>`;
+    }).join('');
+    return `
+        <article class="vm-dsp-card">
+            <div class="vm-dsp-card-heading">
+                <div>
+                    <span class="vm-workflow-eyebrow">六段参数均衡</span>
+                    <strong>${title}</strong>
+                </div>
+                <button class="btn vm-dsp-toggle ${equalizer.enabled ? 'active' : ''}"
+                    data-vm-action="toggle-field" data-vm-field="${path}.enabled"
+                    data-vm-on="${title}已启用" data-vm-off="${title}已关闭">
+                    ${equalizer.enabled ? '已启用' : '已关闭'}
+                </button>
+            </div>
+            <p>${description}</p>
+            <div class="vm-eq-bands">${bands}</div>
+        </article>`;
+}
+
+function renderVoicemeeterStrength(path, title, value, description) {
+    if (value === null || value === undefined) return '';
+    return `
+        <label class="vm-dsp-strength">
+            <span>
+                <strong>${title}</strong>
+                <small>${description}</small>
+            </span>
+            <span class="voicemeeter-gain-value" data-vm-value="${path}">
+                ${Number(value).toFixed(1)} / 10
+            </span>
+            <input type="range" min="0" max="10" step="0.1"
+                value="${Number(value)}" data-vm-field="${path}"
+                data-vm-format="strength">
+        </label>`;
+}
+
+function renderVoicemeeterDsp(status, configuration) {
+    const physical = configuration.physical_input;
+    const microphoneControls = [
+        renderVoicemeeterStrength(
+            'physical_input.audibility',
+            '可听度',
+            physical.audibility,
+            'Standard 的简化增强，会联动压缩与噪声门。',
+        ),
+        renderVoicemeeterStrength(
+            'physical_input.compressor',
+            '压缩器',
+            physical.compressor,
+            '收窄音量差距，让说话声更稳定。',
+        ),
+        renderVoicemeeterStrength(
+            'physical_input.noise_gate',
+            '噪声门',
+            physical.noise_gate,
+            '音量较小时自动压低底噪；过高会吞掉轻声。',
+        ),
+        renderVoicemeeterStrength(
+            'physical_input.denoiser',
+            '降噪',
+            physical.denoiser,
+            'Potato 内置降噪，用于持续的环境噪声。',
+        ),
+    ].filter(Boolean).join('');
+    const vmOutputActive = Boolean(configuration.a1_equalizer?.enabled);
+    const vmMicrophoneActive = [
+        physical.audibility,
+        physical.compressor,
+        physical.noise_gate,
+        physical.denoiser,
+    ].some((value) => Number(value || 0) > 0)
+        || Boolean(physical.equalizer?.enabled);
+    const apo = state.voicemeeterApoProcessing;
+    const activeCount = [
+        physical.audibility,
+        physical.compressor,
+        physical.noise_gate,
+        physical.denoiser,
+    ].filter((value) => Number(value || 0) > 0).length
+        + Number(Boolean(physical.equalizer?.enabled))
+        + Number(Boolean(configuration.a1_equalizer?.enabled));
+    const hasDoubleProcessing = (apo.output_eq_active && vmOutputActive)
+        || (apo.microphone_processing_active && vmMicrophoneActive);
+    const notes = [];
+    if (apo.output_eq_active) {
+        notes.push(`
+            <div class="vm-processing-note ${vmOutputActive ? 'warning' : ''}">
+                <strong>${vmOutputActive ? '检测到扬声器双重均衡' : '该扬声器正在使用 Equalizer APO'}</strong>
+                <span>${vmOutputActive
+        ? 'VoiceMeeter A1 均衡与 Equalizer APO 会依次处理声音，增益可能叠加。'
+        : '如果再启用下方 A1 均衡，将形成两级处理；Audio Hub 不会自动关闭任何一方。'}</span>
+            </div>`);
+    }
+    if (apo.microphone_processing_active) {
+        notes.push(`
+            <div class="vm-processing-note ${vmMicrophoneActive ? 'warning' : ''}">
+                <strong>${vmMicrophoneActive ? '检测到麦克风双重处理' : '该麦克风正在使用 Equalizer APO'}</strong>
+                <span>${vmMicrophoneActive
+        ? 'Equalizer APO 的麦克风增强与 VoiceMeeter 增强会串联，可能导致泵动、失真或吞字。'
+        : '启用下方增强后会形成两级处理；建议每种效果只在一处开启。'}</span>
+            </div>`);
+    }
+    const microphoneEq = renderVoicemeeterEq(
+        'physical_input.equalizer',
+        physical.equalizer,
+        '物理麦克风均衡',
+        '仅 Potato 可用。保留 VoiceMeeter 当前滤波器的频率、类型和 Q 值。',
+    );
+    const a1Eq = renderVoicemeeterEq(
+        'a1_equalizer',
+        configuration.a1_equalizer,
+        'A1 扬声器均衡',
+        'Banana / Potato 可用。处理进入 A1 物理扬声器前的整路混音。',
+    );
+    return `
+        <section class="vm-dsp-section ${state.voicemeeterDspOpen ? 'open' : ''}">
+            <div class="vm-section-heading">
+                <div>
+                    <span class="vm-workflow-eyebrow">可选声音处理</span>
+                    <h4>VoiceMeeter DSP · ${esc(status.edition || '')}</h4>
+                </div>
+                <div class="vm-dsp-heading-actions">
+                    <span class="vm-dsp-summary ${hasDoubleProcessing ? 'warning' : ''}">
+                        ${hasDoubleProcessing ? '检测到双重处理' : `${activeCount} 项已开启`}
+                    </span>
+                    <button class="btn eq-secondary-btn" data-vm-action="toggle-dsp"
+                        aria-expanded="${state.voicemeeterDspOpen}">
+                        ${state.voicemeeterDspOpen ? '收起' : '展开'}
+                    </button>
+                </div>
+            </div>
+            ${state.voicemeeterDspOpen ? `
+                <div class="vm-dsp-content">
+                    <p class="vm-section-copy">
+                        这些效果只处理经过 VoiceMeeter 的路径；Equalizer APO 仍适合设备级耳机 EQ 与直接麦克风处理。
+                    </p>
+                    ${notes.length ? `<div class="vm-processing-notes">${notes.join('')}</div>` : ''}
+                    <div class="vm-dsp-grid">
+                        <article class="vm-dsp-card">
+                            <div class="vm-dsp-card-heading">
+                                <div>
+                                    <span class="vm-workflow-eyebrow">硬件输入 1</span>
+                                    <strong>麦克风增强</strong>
+                                </div>
+                            </div>
+                            <div class="vm-dsp-strengths">${microphoneControls}</div>
+                        </article>
+                        ${microphoneEq}
+                        ${a1Eq}
+                    </div>
+                </div>` : ''}
+        </section>`;
+}
+
+function renderVoicemeeterApplicationManager(playbackDevices) {
+    const target = state.voicemeeterSourceManagerTarget;
+    if (!target) return '';
+    const isMain = target === 'main_mix';
+    const targetDevice = isMain ? playbackDevices.main : playbackDevices.aux;
+    if (!targetDevice) return '';
+    const targetTitle = isMain ? '主混音' : 'AUX 混音';
+    const sessions = voicemeeterApplicationSessions();
+    if (sessions.length === 0) {
+        return `
+            <div class="vm-source-menu-layer" data-vm-source-dismiss>
+            <section class="vm-source-menu" role="dialog" aria-modal="true"
+                aria-label="为${targetTitle}选择应用">
+                <div class="vm-section-heading">
+                    <div>
+                        <span class="vm-workflow-eyebrow">高级模式 · 应用来源</span>
+                        <h4>为${targetTitle}选择应用</h4>
+                    </div>
+                    <button class="btn eq-secondary-btn"
+                        data-vm-action="close-source-manager">关闭</button>
+                </div>
+                <p class="vm-empty-copy">当前没有活跃的应用音频会话。先播放一段声音，再刷新状态。</p>
+            </section>
+            </div>`;
+    }
+    const rows = sessions.map((session) => {
+        const key = sessionKey(session);
+        const currentId = state.sessionDevices[key] || '';
+        const currentDevice = state.outputDevices.find(
+            (device) => device.device_id === currentId,
+        );
+        const selected = currentId === targetDevice.device_id;
+        const routeDescription = selected
+            ? `已加入${targetTitle}，点击移除`
+            : currentId
+                ? `当前输出：${currentDevice?.name || '其他设备'}，点击移到${targetTitle}`
+                : `点击加入${targetTitle}`;
+        return `
+            <button class="vm-app-route-row ${selected ? 'selected' : ''}"
+                data-vm-app-route data-session-key="${escAttr(key)}"
+                data-pid="${session.pid}"
+                data-device-id="${escAttr(targetDevice.device_id)}">
+                <span class="vm-app-route-icon">${sessionIcon(session.display_name)}</span>
+                <span class="vm-app-route-copy">
+                    <strong class="vm-app-route-name" title="${escAttr(session.display_name)}">
+                        ${esc(session.display_name)}
+                    </strong>
+                    <small>${esc(routeDescription)}</small>
+                </span>
+                <span class="vm-app-route-state">${selected ? '移除' : '加入'}</span>
+            </button>`;
+    }).join('');
+    return `
+        <div class="vm-source-menu-layer" data-vm-source-dismiss>
+        <section class="vm-source-menu" role="dialog" aria-modal="true"
+            aria-label="为${targetTitle}选择应用">
+            <div class="vm-section-heading">
+                <div>
+                    <span class="vm-workflow-eyebrow">高级模式 · 应用来源</span>
+                    <h4>为${targetTitle}选择应用</h4>
+                </div>
+                <button class="btn eq-secondary-btn"
+                    data-vm-action="close-source-manager">关闭</button>
+            </div>
+            <p class="vm-section-copy">
+                点击应用即可加入${targetTitle}；再次点击已加入的应用可将其移除。
+            </p>
+            <div class="vm-app-route-list">${rows}</div>
+        </section>
+        </div>`;
+}
+
+function renderVoicemeeterEditor() {
+    const status = state.voicemeeterStatus;
+    const autoStart = localStorage.getItem('audio-hub-voicemeeter-autostart') === 'true';
+    if (!status) {
+        dom.voicemeeterContent.innerHTML = `
+            <div class="voicemeeter-body">
+                <p class="plugin-error">${esc(state.voicemeeterMessage || '无法读取 VoiceMeeter 状态')}</p>
+                <div class="voicemeeter-footer">
+                    <span></span>
+                    <button class="btn eq-secondary-btn" data-vm-action="refresh">重新检测</button>
+                </div>
+            </div>`;
+        return;
+    }
+
+    if (!status.installed) {
+        dom.voicemeeterContent.innerHTML = `
+            <div class="voicemeeter-body">
+                <div class="plugin-state-card">
+                    <span class="plugin-state-dot missing"></span>
+                    <div>
+                        <strong>未检测到 VoiceMeeter</strong>
+                        <p>${esc(status.note)}</p>
+                    </div>
+                    <button class="btn eq-primary-btn plugin-connect-btn"
+                        data-vm-action="download">前往官方下载</button>
+                </div>
+                <p class="plugin-safety-note">
+                    VoiceMeeter 需要由用户单独安装并在安装后重启 Windows。
+                    Audio Hub 不会静默安装或把它打包进便携版。
+                </p>
+                <p class="voicemeeter-attribution">
+                    VoiceMeeter 是 VB-Audio 提供的 donationware。
+                    <a href="https://vb-audio.com/Voicemeeter/">官方网站</a>
+                </p>
+            </div>`;
+        return;
+    }
+
+    const stateClass = status.running ? 'connected' : 'ready';
+    const stateTitle = status.running
+        ? `${status.edition || 'VoiceMeeter'}：已连接`
+        : 'VoiceMeeter：已安装，未运行';
+    const runningActions = status.running
+        ? `<button class="btn eq-secondary-btn" data-vm-action="show">打开原界面</button>`
+        : `<button class="btn eq-primary-btn" data-vm-action="start">启动音频引擎</button>`;
+    const configuration = state.voicemeeterConfiguration;
+
+    let controls = '';
+    if (status.running && configuration) {
+        const monitorDevices = voicemeeterMonitorDevices();
+        const physicalDevices = voicemeeterPhysicalInputDevices();
+        const playbackDevices = voicemeeterPlaybackDevices();
+        const mainSessions = voicemeeterRoutedSessions(playbackDevices.main);
+        const auxSessions = voicemeeterRoutedSessions(playbackDevices.aux);
+        const currentDevice = configuration.monitor_device_name || '';
+        const hasCurrentDevice = monitorDevices.some(
+            (device) => device.name === currentDevice,
+        );
+        const currentOption = currentDevice && !hasCurrentDevice
+            ? `<option value="${escAttr(currentDevice)}" selected>${esc(currentDevice)}</option>`
+            : '';
+        const emptyDeviceOption = currentDevice
+            ? ''
+            : '<option value="" selected disabled>选择耳机或扬声器</option>';
+        const monitorOptions = monitorDevices.map((device) => `
+            <option value="${escAttr(device.name)}"
+                ${device.name === currentDevice ? 'selected' : ''}>
+                ${esc(device.name)}${device.is_default ? '（系统默认）' : ''}
+            </option>`).join('');
+        const physicalInput = configuration.physical_input;
+        const physicalDeviceName = physicalInput.device_name || '';
+        const hasPhysicalDevice = physicalDevices.some(
+            (device) => device.name === physicalDeviceName,
+        );
+        const missingPhysicalOption = physicalDeviceName && !hasPhysicalDevice
+            ? `<option value="${escAttr(physicalDeviceName)}" selected>
+                ${esc(physicalDeviceName)}（当前设备）
+            </option>`
+            : '';
+        const physicalOptions = physicalDevices.map((device) => `
+            <option value="${escAttr(device.name)}"
+                ${device.name === physicalDeviceName ? 'selected' : ''}>
+                ${esc(device.name)}${device.is_default ? '（系统默认）' : ''}
+            </option>`).join('');
+        const activeRoutes = Number(configuration.main_mix.monitor_enabled)
+            + Number(configuration.main_mix.virtual_microphone_enabled)
+            + Number(configuration.aux_mix?.monitor_enabled)
+            + Number(configuration.aux_mix?.virtual_microphone_enabled)
+            + Number(physicalInput.monitor_enabled)
+            + Number(physicalInput.main_mix_enabled)
+            + Number(physicalInput.aux_mix_enabled);
+        const maximumRoutes = configuration.aux_mix ? 7 : 4;
+        const anyRouteEnabled = activeRoutes > 0;
+        const sourceManager = renderVoicemeeterApplicationManager(playbackDevices);
+
+        controls = `
+            <section class="vm-workflow ${state.voicemeeterBusy
+        ? 'voicemeeter-disabled' : ''}">
+                <div class="vm-workflow-heading">
+                    <div>
+                        <span class="vm-workflow-eyebrow">双混音工作流</span>
+                        <h3>组合应用声音与物理麦克风</h3>
+                    </div>
+                    <div class="vm-workflow-heading-actions">
+                        <span class="vm-route-count ${anyRouteEnabled ? 'active' : ''}">
+                            ${activeRoutes}/${maximumRoutes} 条路由已连接
+                        </span>
+                    </div>
+                </div>
+                <div class="vm-shared-output">
+                    <div>
+                        <span class="vm-node-step">物理输出 · A1</span>
+                        <strong>实际播放声音的扬声器或耳机</strong>
+                    </div>
+                    <select class="device-select" data-vm-field="monitor_device_name"
+                        aria-label="实际播放声音的物理扬声器或耳机，VoiceMeeter A1">
+                        ${emptyDeviceOption}
+                        ${currentOption}
+                        ${monitorOptions}
+                    </select>
+                </div>
+                <div class="vm-mixer-grid">
+                    <article class="vm-physical-card
+                        ${physicalDeviceName ? 'connected' : 'attention'}
+                        ${physicalInput.muted ? 'muted' : ''}">
+                        <div class="vm-mix-header">
+                            <div>
+                                <span class="vm-node-step">硬件输入 1</span>
+                                <strong>物理麦克风</strong>
+                            </div>
+                            <span class="vm-technical-tag">Strip 1</span>
+                        </div>
+                        <select class="device-select"
+                            data-vm-field="physical_input.device_name"
+                            aria-label="物理麦克风设备">
+                            <option value="" ${physicalDeviceName ? '' : 'selected'}>
+                                不使用物理输入
+                            </option>
+                            ${missingPhysicalOption}
+                            ${physicalOptions}
+                        </select>
+                        <label class="vm-control-label">
+                            <span>输入增益</span>
+                            <span class="voicemeeter-gain-value"
+                                data-vm-value="physical_input.gain_db">
+                                ${formatVoicemeeterGain(physicalInput.gain_db)}
+                            </span>
+                        </label>
+                        <input type="range" min="-24" max="12" step="0.5"
+                            value="${Number(physicalInput.gain_db)}"
+                            data-vm-field="physical_input.gain_db">
+                        <button class="btn vm-mute-action
+                            ${physicalInput.muted ? 'active' : ''}"
+                            data-vm-action="toggle-field"
+                            data-vm-field="physical_input.muted"
+                            data-vm-on="物理麦克风已静音"
+                            data-vm-off="物理麦克风已取消静音">
+                            ${physicalInput.muted ? '已静音，点击恢复' : '静音物理麦克风'}
+                        </button>
+                        <div class="vm-physical-routes">
+                            <button class="btn vm-route-action
+                                ${physicalInput.monitor_enabled ? 'connected' : ''}"
+                                data-vm-action="toggle-field"
+                                data-vm-field="physical_input.monitor_enabled"
+                                data-vm-on="物理麦克风已输出到 ${escAttr(
+        currentDevice || '物理扬声器',
+    )}"
+                                data-vm-off="物理麦克风已停止输出到物理扬声器"
+                                aria-label="输出到物理扬声器，A1 当前绑定 ${escAttr(
+        currentDevice || '尚未选择设备',
+    )}"
+                                title="A1 当前绑定：${escAttr(
+        currentDevice || '尚未选择设备',
+    )}"
+                                ${physicalDeviceName ? '' : 'disabled'}>
+                                <span class="vm-route-action-dot"></span>
+                                <span class="vm-route-action-content">
+                                    <strong>输出到物理扬声器</strong>
+                                    <small>A1 · ${esc(currentDevice || '尚未选择设备')}</small>
+                                </span>
+                            </button>
+                            <button class="btn vm-route-action
+                                ${physicalInput.main_mix_enabled ? 'connected' : ''}"
+                                data-vm-action="toggle-field"
+                                data-vm-field="physical_input.main_mix_enabled"
+                                data-vm-on="物理麦克风已输出到虚拟麦克风 B1"
+                                data-vm-off="物理麦克风已停止输出到虚拟麦克风 B1"
+                                aria-label="输出到虚拟麦克风 B1"
+                                ${physicalDeviceName ? '' : 'disabled'}>
+                                <span class="vm-route-action-dot"></span>
+                                <span class="vm-route-action-content">
+                                    <strong>输出到虚拟麦克风</strong>
+                                    <small>B1 · VoiceMeeter Out B1</small>
+                                </span>
+                            </button>
+                            ${configuration.aux_mix ? `
+                                <button class="btn vm-route-action
+                                    ${physicalInput.aux_mix_enabled ? 'connected' : ''}"
+                                    data-vm-action="toggle-field"
+                                    data-vm-field="physical_input.aux_mix_enabled"
+                                    data-vm-on="物理麦克风已输出到虚拟麦克风 B2"
+                                    data-vm-off="物理麦克风已停止输出到虚拟麦克风 B2"
+                                    aria-label="输出到虚拟麦克风 B2"
+                                    ${physicalDeviceName ? '' : 'disabled'}>
+                                    <span class="vm-route-action-dot"></span>
+                                    <span class="vm-route-action-content">
+                                        <strong>输出到虚拟麦克风</strong>
+                                        <small>B2 · VoiceMeeter Out B2 / AUX Output</small>
+                                    </span>
+                                </button>` : ''}
+                        </div>
+                    </article>
+                    ${renderVoicemeeterMix(
+        'main_mix',
+        '主混音',
+        playbackDevices.main,
+        mainSessions,
+        configuration.main_mix,
+    )}
+                    ${configuration.aux_mix ? renderVoicemeeterMix(
+        'aux_mix',
+        'AUX 混音',
+        playbackDevices.aux,
+        auxSessions,
+        configuration.aux_mix,
+    ) : `
+                        <article class="vm-aux-unavailable">
+                            <span class="vm-node-step">AUX · 不可用</span>
+                            <strong>Standard 版不支持 AUX 混音</strong>
+                            <p>安装 VoiceMeeter Banana 或 Potato 后，可使用
+                                VoiceMeeter AUX Input 与 B2 独立输出。</p>
+                        </article>`}
+                </div>
+                ${renderVoicemeeterDsp(status, configuration)}
+                <div class="vm-workflow-hint">
+                    <span>提示</span>
+                    <p>聊天软件选择 VoiceMeeter Out B1 使用主混音；
+                        选择 VoiceMeeter AUX Output 使用 AUX 混音。</p>
+                </div>
+            </section>
+            ${sourceManager}`;
+    }
+
+    dom.voicemeeterContent.innerHTML = `
+        <div class="voicemeeter-body">
+            <div class="plugin-state-card">
+                <span class="plugin-state-dot ${stateClass}"></span>
+                <div>
+                    <strong>${esc(stateTitle)}</strong>
+                    <p>${esc(status.note)}</p>
+                </div>
+                <div class="voicemeeter-state-actions">${runningActions}</div>
+            </div>
+            ${controls}
+            <p class="plugin-safety-note">
+                想让 VoiceMeeter 不显示主窗口：在 VoiceMeeter 菜单中启用
+                “System Tray”，并关闭 “Show App On Startup”。它仍会作为音频引擎运行。
+            </p>
+            ${state.voicemeeterMessage
+        ? `<p class="plugin-result">${esc(state.voicemeeterMessage)}</p>` : ''}
+            <div class="voicemeeter-footer">
+                <label class="voicemeeter-background-row">
+                    <input type="checkbox" id="voicemeeter-background-start"
+                        ${autoStart ? 'checked' : ''}>
+                    <span>Audio Hub 启动时自动启动 VoiceMeeter</span>
+                </label>
+                <div class="voicemeeter-footer-actions">
+                    <button class="btn eq-secondary-btn" data-vm-action="refresh">刷新状态</button>
+                    ${status.running
+        ? '<button class="btn eq-secondary-btn" data-vm-action="restart">重启音频引擎</button>'
+        : ''}
+                </div>
+            </div>
+            <p class="voicemeeter-attribution">
+                VoiceMeeter 由 VB-Audio 提供，Audio Hub 仅通过官方 Remote API 控制。
+            </p>
+        </div>`;
+}
+
+async function applyVoicemeeterConfiguration(message = 'VoiceMeeter 参数已更新') {
+    if (state.voicemeeterBusy || !state.voicemeeterConfiguration) return;
+    const requestedConfiguration = structuredClone(state.voicemeeterConfiguration);
+    const previousConfiguration = structuredClone(
+        state.voicemeeterStatus?.configuration ?? state.voicemeeterConfiguration,
+    );
+    state.voicemeeterBusy = true;
+    renderVoicemeeterEditor();
+    try {
+        const updatedStatus = await AudioAPI.applyVoicemeeterConfiguration(
+            requestedConfiguration,
+        );
+        updatedStatus.configuration = structuredClone(requestedConfiguration);
+        state.voicemeeterStatus = updatedStatus;
+        state.voicemeeterConfiguration = structuredClone(requestedConfiguration);
+        await refreshVoicemeeterApoProcessing();
+        state.voicemeeterMessage = message;
+        setStatus(message);
+    } catch (err) {
+        state.voicemeeterConfiguration = previousConfiguration;
+        if (state.voicemeeterStatus) {
+            state.voicemeeterStatus.configuration =
+                structuredClone(previousConfiguration);
+        }
+        state.voicemeeterMessage = `更新失败：${err}`;
+        setStatus(`VoiceMeeter 更新失败：${err}`);
+    } finally {
+        state.voicemeeterBusy = false;
+        renderVoicemeeterEditor();
+    }
+}
+
+async function toggleSimpleRouteApplication(button) {
+    if (state.simpleRouteBusy || !state.voicemeeterStatus?.connected) return;
+    const pid = Number(button.dataset.pid);
+    const key = button.dataset.sessionKey;
+    const session = state.sessions.find((item) => item.pid === pid);
+    if (!session || !key) return;
+    const previousStatus = structuredClone(state.simpleRouteStatus);
+    const enabled = previousStatus.applications.some(
+        (application) => application.key === key,
+    );
+    if (enabled && previousStatus.applications.length === 1) {
+        await shutdownVoicemeeterFlow();
+        return;
+    }
+    state.simpleRouteBusy = true;
+    renderSessionList();
+    renderVoicemeeterEntry();
+    try {
+        const nextStatus = enabled
+            ? await AudioAPI.disableSimpleRouteApplication(key, pid)
+            : await AudioAPI.enableSimpleRouteApplication(
+                pid,
+                key,
+                session.display_name,
+            );
+        state.simpleRouteStatus = nextStatus;
+        syncSimpleRouteSessionDevices(previousStatus, nextStatus);
+        const inputDevices = await AudioAPI.enumerateDevices('Input');
+        state.inputDevices = inputDevices;
+        state.defaultInput = inputDevices.find((device) => device.is_default) || null;
+        renderStatusbar();
+        setStatus(enabled
+            ? `${session.display_name} 已停止流转并恢复原输出`
+            : `${session.display_name} 与物理麦克风已传到默认虚拟麦克风；本地监听：${nextStatus.monitor_device_name || '默认物理扬声器'}`);
+    } catch (err) {
+        setStatus(`简易流转失败：${err}`);
+    } finally {
+        state.simpleRouteBusy = false;
+        renderSessionList();
+        renderVoicemeeterEntry();
+    }
+}
+
+function inactiveSimpleRouteStatus() {
+    return {
+        active: false,
+        applications: [],
+        physical_microphone_name: null,
+        monitor_device_name: null,
+        virtual_microphone_id: null,
+        voicemeeter_input_id: null,
+        recovery_pending: false,
+    };
+}
+
+async function shutdownVoicemeeterFlow() {
+    if (state.simpleRouteBusy || state.voicemeeterBusy) return;
+    const previousStatus = structuredClone(state.simpleRouteStatus);
+    state.simpleRouteBusy = true;
+    renderSessionList();
+    renderVoicemeeterEntry();
+    try {
+        const voicemeeterStatus = await AudioAPI.shutdownVoicemeeter();
+        const nextStatus = inactiveSimpleRouteStatus();
+        state.simpleRouteStatus = nextStatus;
+        syncSimpleRouteSessionDevices(previousStatus, nextStatus);
+        state.voicemeeterStatus = voicemeeterStatus;
+        state.voicemeeterConfiguration = null;
+        state.voicemeeterModeMenuOpen = false;
+        closeVoicemeeterEditor();
+        const inputDevices = await AudioAPI.enumerateDevices('Input');
+        state.inputDevices = inputDevices;
+        state.defaultInput = inputDevices.find((device) => device.is_default) || null;
+        renderStatusbar();
+        setStatus('声音流转已关闭，VoiceMeeter 已退出');
+    } catch (err) {
+        await refreshSimpleRouteIntegration();
+        setStatus(`关闭声音流转失败：${err}`);
+    } finally {
+        state.simpleRouteBusy = false;
+        renderSessionList();
+        renderVoicemeeterEntry();
+    }
+}
+
+async function stopAllSimpleRoutes() {
+    if (state.simpleRouteBusy || !state.simpleRouteStatus.active) return;
+    const previousStatus = structuredClone(state.simpleRouteStatus);
+    state.simpleRouteBusy = true;
+    renderSessionList();
+    renderVoicemeeterEntry();
+    try {
+        const nextStatus = await AudioAPI.stopAllSimpleRoutes();
+        state.simpleRouteStatus = nextStatus;
+        syncSimpleRouteSessionDevices(previousStatus, nextStatus);
+        const inputDevices = await AudioAPI.enumerateDevices('Input');
+        state.inputDevices = inputDevices;
+        state.defaultInput = inputDevices.find((device) => device.is_default) || null;
+        renderStatusbar();
+        state.voicemeeterModeMenuOpen = false;
+        setStatus('已退出简易模式，应用输出和默认麦克风已恢复');
+    } catch (err) {
+        setStatus(`退出简易模式失败：${err}`);
+    } finally {
+        state.simpleRouteBusy = false;
+        renderSessionList();
+        renderVoicemeeterEntry();
+    }
+}
+
+async function routeVoicemeeterApplication(control) {
+    if (state.voicemeeterBusy) return;
+    const pid = Number(control.dataset.pid);
+    const stableKey = control.dataset.sessionKey;
+    const requestedDeviceId = control.dataset.deviceId;
+    const deviceId = state.sessionDevices[stableKey] === requestedDeviceId
+        ? ''
+        : requestedDeviceId;
+    state.voicemeeterBusy = true;
+    renderVoicemeeterEditor();
+    try {
+        await AudioAPI.setAppOutputDevice(pid, deviceId);
+        if (deviceId) {
+            state.sessionDevices[stableKey] = deviceId;
+        } else {
+            delete state.sessionDevices[stableKey];
+        }
+        saveSessionDevices();
+        renderSessionList();
+        state.voicemeeterMessage = deviceId
+            ? '应用已加入 VoiceMeeter 工作流'
+            : '应用已恢复系统默认输出';
+        setStatus(state.voicemeeterMessage);
+    } catch (err) {
+        state.voicemeeterMessage = `应用路由失败：${err}`;
+        setStatus(state.voicemeeterMessage);
+    } finally {
+        state.voicemeeterBusy = false;
+        renderVoicemeeterEditor();
+    }
+}
+
+async function runVoicemeeterAction(action, field, button) {
+    if (state.voicemeeterBusy) return;
+    if (action === 'download') {
+        await AudioAPI.openVoicemeeterDownload()
+            .catch((err) => setStatus(`打开 VoiceMeeter 下载页失败：${err}`));
+        return;
+    }
+    if (action === 'open-source-manager') {
+        const target = button?.dataset.vmTarget;
+        state.voicemeeterSourceManagerTarget =
+            state.voicemeeterSourceManagerTarget === target ? null : target;
+        renderVoicemeeterEditor();
+        return;
+    }
+    if (action === 'close-source-manager') {
+        state.voicemeeterSourceManagerTarget = null;
+        renderVoicemeeterEditor();
+        return;
+    }
+    if (action === 'toggle-dsp') {
+        state.voicemeeterDspOpen = !state.voicemeeterDspOpen;
+        renderVoicemeeterEditor();
+        return;
+    }
+    if (action === 'toggle-field' && field) {
+        const nextValue = !getVoicemeeterField(field);
+        if (!setVoicemeeterField(field, nextValue)) return;
+        await applyVoicemeeterConfiguration(
+            nextValue ? button?.dataset.vmOn : button?.dataset.vmOff,
+        );
+        return;
+    }
+
+    state.voicemeeterBusy = true;
+    renderVoicemeeterEditor();
+    try {
+        if (action === 'start') {
+            state.voicemeeterStatus = await AudioAPI.startVoicemeeter();
+            state.voicemeeterMessage = 'VoiceMeeter 已启动';
+        } else if (action === 'show') {
+            state.voicemeeterStatus = await AudioAPI.showVoicemeeter();
+        } else if (action === 'restart') {
+            state.voicemeeterStatus = await AudioAPI.restartVoicemeeterAudioEngine();
+            state.voicemeeterMessage = 'VoiceMeeter 音频引擎已重启';
+        } else if (action === 'refresh') {
+            const [status, outputDevices, inputDevices, sessions] = await Promise.all([
+                AudioAPI.voicemeeterStatus(),
+                AudioAPI.enumerateDevices('Output'),
+                AudioAPI.enumerateDevices('Input'),
+                AudioAPI.enumerateSessions(),
+            ]);
+            state.voicemeeterStatus = status;
+            state.outputDevices = outputDevices;
+            state.inputDevices = inputDevices;
+            state.sessions = sessions;
+            renderAll();
+            state.voicemeeterMessage = null;
+        }
+        state.voicemeeterConfiguration =
+            structuredClone(state.voicemeeterStatus.configuration);
+        await refreshVoicemeeterApoProcessing();
+    } catch (err) {
+        state.voicemeeterMessage = `操作失败：${err}`;
+        setStatus(`VoiceMeeter 操作失败：${err}`);
+    } finally {
+        state.voicemeeterBusy = false;
+        renderVoicemeeterEditor();
+    }
 }
 
 async function openGlobalEqEditor() {
@@ -1153,6 +2491,14 @@ function renderProfiles() {
             .join('');
     }
     sel.value = state.profiles.includes(selected) ? selected : state.profiles[0] || '';
+    dom.volumePresetBtn.classList.toggle('active', state.volumePresetMenuOpen);
+    dom.volumePresetBtn.setAttribute(
+        'aria-expanded',
+        state.volumePresetMenuOpen ? 'true' : 'false',
+    );
+    dom.volumePresetMenu.classList.toggle('hidden', !state.volumePresetMenuOpen);
+    dom.profileSaveBtn.disabled = !sel.value;
+    dom.profileDeleteBtn.disabled = !sel.value || state.profiles.length <= 1;
 }
 
 // ── 设备抽屉 ─────────────────────────────────────────
@@ -1281,24 +2627,6 @@ async function toggleDrawerDeviceMute(kind) {
     }
 }
 
-// ── 自动保存 ─────────────────────────────────────────
-function triggerAutoSave() {
-    const name = dom.profileSelect.value;
-    if (!name) return;
-
-    const snapshot = state.sessions.map((s) => ({ ...s }));
-
-    if (state.autoSaveTimer) clearTimeout(state.autoSaveTimer);
-    state.autoSaveTimer = setTimeout(async () => {
-        try {
-            await AudioAPI.saveProfile(name, snapshot);
-            setStatus(`已保存至「${name}」`);
-        } catch {
-            // 静默失败，不影响用户体验
-        }
-    }, 500);
-}
-
 // 确保"默认配置"始终存在
 async function ensureDefaultProfile() {
     // 仅在没有任何配置时创建初始默认配置
@@ -1379,7 +2707,7 @@ async function refreshRuntimeState({ sessions: refreshSessions, devices: refresh
     );
 
     try {
-        const [sessionsResult, outputResult, inputResult] =
+        const [sessionsResult, outputResult, inputResult, voicemeeterResult] =
             await Promise.allSettled([
                 refreshSessions
                     ? AudioAPI.enumerateSessions()
@@ -1390,19 +2718,28 @@ async function refreshRuntimeState({ sessions: refreshSessions, devices: refresh
                 refreshDevices
                     ? AudioAPI.enumerateDevices('Input')
                     : Promise.resolve(null),
+                refreshDevices
+                    ? AudioAPI.voicemeeterStatus()
+                    : Promise.resolve(null),
             ]);
 
         let devicesChanged = false;
         let sessionsChanged = false;
+        let defaultOutputChanged = false;
+        let voicemeeterReconnected = false;
 
         if (outputResult.status === 'fulfilled' && outputResult.value) {
             devicesChanged =
                 devicesChanged ||
                 deviceStateSignature(state.outputDevices) !==
                     deviceStateSignature(outputResult.value);
-            state.outputDevices = outputResult.value;
-            state.defaultOutput =
+            const nextDefaultOutput =
                 outputResult.value.find((device) => device.is_default) || null;
+            defaultOutputChanged =
+                (state.defaultOutput?.device_id || null) !==
+                (nextDefaultOutput?.device_id || null);
+            state.outputDevices = outputResult.value;
+            state.defaultOutput = nextDefaultOutput;
         }
 
         if (inputResult.status === 'fulfilled' && inputResult.value) {
@@ -1413,6 +2750,20 @@ async function refreshRuntimeState({ sessions: refreshSessions, devices: refresh
             state.inputDevices = inputResult.value;
             state.defaultInput =
                 inputResult.value.find((device) => device.is_default) || null;
+        }
+
+        if (voicemeeterResult.status === 'fulfilled' && voicemeeterResult.value) {
+            const connectionChanged =
+                Boolean(state.voicemeeterStatus?.connected) !==
+                Boolean(voicemeeterResult.value.connected);
+            if (connectionChanged) {
+                voicemeeterReconnected = Boolean(voicemeeterResult.value.connected);
+                state.voicemeeterStatus = voicemeeterResult.value;
+                state.voicemeeterConfiguration =
+                    structuredClone(voicemeeterResult.value.configuration);
+                renderVoicemeeterEntry();
+                renderSessionList();
+            }
         }
 
         if (sessionsResult.status === 'fulfilled' && sessionsResult.value) {
@@ -1442,6 +2793,10 @@ async function refreshRuntimeState({ sessions: refreshSessions, devices: refresh
             renderDeviceList();
             renderStatusbar();
             if (state.drawerOpen) refreshDrawerVolumes();
+        }
+
+        if (defaultOutputChanged || voicemeeterReconnected) {
+            await syncSimpleRouteMonitorToDefault();
         }
 
         if (devicesChanged || (sessionsChanged && !routeDropdownOpen)) {
@@ -1653,6 +3008,93 @@ function setupEventListeners() {
     });
     $('#about-autostart')?.addEventListener('change', (e) => {
         setAboutAutostart(e.target.checked);
+    });
+
+    dom.voicemeeterBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        state.voicemeeterModeMenuOpen = !state.voicemeeterModeMenuOpen;
+        if (state.voicemeeterModeMenuOpen && state.volumePresetMenuOpen) {
+            state.volumePresetMenuOpen = false;
+            renderProfiles();
+        }
+        renderVoicemeeterEntry();
+    });
+    dom.voicemeeterModeMenu.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const option = e.target.closest('[data-vm-entry-action]');
+        if (!option || option.disabled) return;
+        await runVoicemeeterEntryAction(option.dataset.vmEntryAction);
+    });
+    dom.volumePresetBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        state.volumePresetMenuOpen = !state.volumePresetMenuOpen;
+        if (state.volumePresetMenuOpen) {
+            state.voicemeeterModeMenuOpen = false;
+            renderVoicemeeterEntry();
+        }
+        renderProfiles();
+    });
+    dom.volumePresetMenu.addEventListener('click', (e) => e.stopPropagation());
+    dom.voicemeeterCloseBtn.addEventListener('click', closeVoicemeeterEditor);
+    dom.voicemeeterModal.addEventListener('click', (e) => {
+        if (e.target === dom.voicemeeterModal) closeVoicemeeterEditor();
+    });
+    dom.voicemeeterContent.addEventListener('input', (e) => {
+        const field = e.target.dataset.vmField;
+        if (!field || !state.voicemeeterConfiguration) return;
+        if (e.target.type === 'range') {
+            setVoicemeeterField(field, Number(e.target.value));
+            const value = dom.voicemeeterContent.querySelector(
+                `[data-vm-value="${field}"]`,
+            );
+            if (value) {
+                value.textContent = e.target.dataset.vmFormat === 'strength'
+                    ? `${Number(e.target.value).toFixed(1)} / 10`
+                    : formatVoicemeeterGain(e.target.value);
+            }
+        }
+    });
+    dom.voicemeeterContent.addEventListener('change', async (e) => {
+        if (e.target.id === 'voicemeeter-background-start') {
+            localStorage.setItem(
+                'audio-hub-voicemeeter-autostart',
+                e.target.checked ? 'true' : 'false',
+            );
+            state.voicemeeterMessage = e.target.checked
+                ? '已启用随 Audio Hub 后台启动'
+                : '已关闭随 Audio Hub 后台启动';
+            renderVoicemeeterEditor();
+            return;
+        }
+        const field = e.target.dataset.vmField;
+        if (!field || !state.voicemeeterConfiguration) return;
+        if (e.target.type === 'checkbox') {
+            setVoicemeeterField(field, e.target.checked);
+        } else if (e.target.type === 'range') {
+            setVoicemeeterField(field, Number(e.target.value));
+        } else {
+            setVoicemeeterField(field, e.target.value || null);
+        }
+        await applyVoicemeeterConfiguration();
+    });
+    dom.voicemeeterContent.addEventListener('click', async (e) => {
+        if (e.target.matches('[data-vm-source-dismiss]')) {
+            state.voicemeeterSourceManagerTarget = null;
+            renderVoicemeeterEditor();
+            return;
+        }
+        const appRoute = e.target.closest('[data-vm-app-route]');
+        if (appRoute) {
+            await routeVoicemeeterApplication(appRoute);
+            return;
+        }
+        const button = e.target.closest('[data-vm-action]');
+        if (!button) return;
+        await runVoicemeeterAction(
+            button.dataset.vmAction,
+            button.dataset.vmField,
+            button,
+        );
     });
 
     dom.globalEqBtn.addEventListener('click', openGlobalEqEditor);
@@ -2003,6 +3445,14 @@ function setupEventListeners() {
         if (e.key === 'Escape' && !dom.globalEqModal.classList.contains('hidden')) {
             closeGlobalEqEditor();
         }
+        if (e.key === 'Escape' && !dom.voicemeeterModal.classList.contains('hidden')) {
+            if (state.voicemeeterSourceManagerTarget) {
+                state.voicemeeterSourceManagerTarget = null;
+                renderVoicemeeterEditor();
+            } else {
+                closeVoicemeeterEditor();
+            }
+        }
     });
 
     // WebView2 滚动接管
@@ -2026,6 +3476,13 @@ function setupEventListeners() {
         AudioAPI.setSessionVolume(pid, volume).catch(() => {
             loadAllData();
         });
+    });
+
+    dom.sessionList.addEventListener('click', async (e) => {
+        const button = e.target.closest('[data-simple-route]');
+        if (!button || button.disabled) return;
+        e.stopPropagation();
+        await toggleSimpleRouteApplication(button);
     });
 
     dom.sessionList.addEventListener('click', async (e) => {
@@ -2120,6 +3577,14 @@ function setupEventListeners() {
 
     // 点击页面任意位置关闭下拉
     document.addEventListener('click', () => {
+        if (state.voicemeeterModeMenuOpen) {
+            state.voicemeeterModeMenuOpen = false;
+            renderVoicemeeterEntry();
+        }
+        if (state.volumePresetMenuOpen) {
+            state.volumePresetMenuOpen = false;
+            renderProfiles();
+        }
         dom.sessionList
             .querySelectorAll('.route-dropdown:not(.hidden)')
             .forEach((d) => d.classList.add('hidden'));
@@ -2146,12 +3611,24 @@ function setupEventListeners() {
         renderSessionList();
     });
 
-    // 场景新建（不允许重名）
+    dom.profileSaveBtn.addEventListener('click', async () => {
+        const name = dom.profileSelect.value;
+        if (!name) return;
+        try {
+            await AudioAPI.saveProfile(name, state.sessions);
+            setStatus(`已保存当前应用音量至「${name}」`);
+        } catch (err) {
+            console.error('保存音量预设失败：', err);
+            setStatus('保存音量预设失败');
+        }
+    });
+
+    // 音量预设新建（不允许重名）
     dom.profileNewBtn.addEventListener('click', async () => {
-        const name = prompt('输入场景名称（例如“FPS”或“电影”）：');
+        const name = prompt('输入音量预设名称（例如“游戏”或“观影”）：');
         if (!name || !name.trim()) return;
         if (state.profiles.includes(name.trim())) {
-            setStatus(`场景「${name.trim()}」已存在`);
+            setStatus(`音量预设「${name.trim()}」已存在`);
             return;
         }
         try {
@@ -2160,14 +3637,14 @@ function setupEventListeners() {
             localStorage.setItem('audio-hub-profile', name.trim());
             renderProfiles();
             dom.profileSelect.value = name.trim();
-            setStatus(`已创建场景「${name.trim()}」`);
+            setStatus(`已创建音量预设「${name.trim()}」`);
         } catch (err) {
-            console.error('创建场景失败：', err);
-            setStatus('创建场景失败');
+            console.error('创建音量预设失败：', err);
+            setStatus('创建音量预设失败');
         }
     });
 
-    // 场景选择即切换（记住上次选择）
+    // 选择音量预设即应用，并记住上次选择。
     dom.profileSelect.addEventListener('change', async () => {
         const name = dom.profileSelect.value;
         if (!name) return;
@@ -2175,22 +3652,22 @@ function setupEventListeners() {
         try {
             await AudioAPI.applyProfile(name);
             await loadAllData();
-            setStatus(`已切换至场景「${name}」`);
+            setStatus(`已应用音量预设「${name}」`);
         } catch (err) {
-            console.error('应用场景失败：', err);
-            setStatus('场景切换失败');
+            console.error('应用音量预设失败：', err);
+            setStatus('应用音量预设失败');
         }
     });
 
-    // 场景删除（仅剩一个时不可删除）
+    // 音量预设删除（仅剩一个时不可删除）
     dom.profileDeleteBtn.addEventListener('click', async () => {
         const name = dom.profileSelect.value;
         if (!name) return;
         if (state.profiles.length <= 1) {
-            setStatus('最后一个场景不可删除');
+            setStatus('最后一个音量预设不可删除');
             return;
         }
-        if (!confirm(`确定删除场景「${name}」？`)) return;
+        if (!confirm(`确定删除音量预设「${name}」？`)) return;
         try {
             await AudioAPI.deleteProfile(name);
             state.profiles = await AudioAPI.listProfiles();
@@ -2204,8 +3681,8 @@ function setupEventListeners() {
             }
             setStatus(`已删除「${name}」`);
         } catch (err) {
-            console.error('删除场景失败：', err);
-            setStatus('删除场景失败');
+            console.error('删除音量预设失败：', err);
+            setStatus('删除音量预设失败');
         }
     });
 
@@ -2269,7 +3746,6 @@ function updateLocalVolume(pid, volume) {
             session.muted = false;
             AudioAPI.setSessionMute(pid, false).catch(() => {});
         }
-        triggerAutoSave();
     }
     const pct = Math.round(volume * 100);
     dom.sessionList.querySelectorAll(`[data-pid="${pid}"]`).forEach((el) => {
@@ -2295,7 +3771,6 @@ function updateLocalVolume(pid, volume) {
 function updateLocalMute(pid, muted) {
     const session = state.sessions.find((s) => s.pid === pid);
     if (session) session.muted = muted;
-    triggerAutoSave();
     dom.sessionList.querySelectorAll(`[data-pid="${pid}"]`).forEach((el) => {
         if (el.classList.contains('mute-btn')) {
             if (muted) {
