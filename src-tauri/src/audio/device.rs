@@ -41,6 +41,9 @@ impl std::fmt::Display for AudioDevice {
 pub struct AudioSession {
     /// 显示名称，例如 "Chrome"、"Discord"、"Steam"
     pub display_name: String,
+    /// ToolHelp 快照读取到的实际进程名，用于需要与前台窗口匹配的功能。
+    #[serde(default)]
+    pub process_name: Option<String>,
     /// 进程 ID
     pub pid: u32,
     /// 音量（0.0 ~ 1.0）

@@ -13,14 +13,16 @@ const state = {
     drawerOpen: false,
     hiddenSessions: new Set(),
     showHidden: false,
-    profiles: [],
     autoRefreshId: null,
     refreshing: false,
     notificationRefreshTimer: null,
     notificationUnlisteners: [],
     pendingSessionRefresh: false,
     pendingDeviceRefresh: false,
-    volumePresetMenuOpen: false,
+    deviceVolumeFollowEnabled: false,
+    deviceVolumeSnapshots: {},
+    deviceVolumeFollowBusy: false,
+    deviceVolumeSnapshotTimer: null,
     captureStatus: {
         supported: false,
         windows_build: 0,
@@ -56,6 +58,18 @@ const state = {
     autostartBusy: false,
     autostartEnabled: false,
     autostartMessage: null,
+    closeBehavior: 'minimize',
+    closeBehaviorChosen: false,
+    closeBehaviorBusy: false,
+    closeBehaviorMessage: null,
+    closeBehaviorFirstChoice: false,
+    unfocusedMuteStatus: {
+        applications: [],
+        auto_muted_keys: [],
+        foreground_key: null,
+    },
+    unfocusedMuteBusy: false,
+    unfocusedMuteMessage: null,
     voicemeeterStatus: null,
     voicemeeterConfiguration: null,
     voicemeeterBusy: false,
@@ -96,12 +110,8 @@ const dom = {
     sessionList: $('#session-list'),
     sessionCount: $('#session-count'),
     hiddenBadge: $('#hidden-badge'),
-    volumePresetBtn: $('#volume-preset-btn'),
-    volumePresetMenu: $('#volume-preset-menu'),
-    profileSelect: $('#profile-select'),
-    profileSaveBtn: $('#profile-save-btn'),
-    profileNewBtn: $('#profile-new-btn'),
-    profileDeleteBtn: $('#profile-delete-btn'),
+    deviceVolumeFollowBtn: $('#device-volume-follow-btn'),
+    deviceVolumeFollowLabel: $('#device-volume-follow-label'),
     statusText: $('#status-text'),
     statusbarOutput: $('#statusbar-output'),
     statusbarInput: $('#statusbar-input'),
@@ -111,6 +121,11 @@ const dom = {
     globalEqModal: $('#global-eq-modal'),
     globalEqCloseBtn: $('#global-eq-close-btn'),
     globalEqContent: $('#global-eq-content'),
+    unfocusedMuteBtn: $('#unfocused-mute-btn'),
+    unfocusedMuteBtnLabel: $('#unfocused-mute-btn-label'),
+    unfocusedMuteModal: $('#unfocused-mute-modal'),
+    unfocusedMuteCloseBtn: $('#unfocused-mute-close-btn'),
+    unfocusedMuteContent: $('#unfocused-mute-content'),
     voicemeeterBtn: $('#voicemeeter-btn'),
     voicemeeterBtnLabel: $('#voicemeeter-btn-label'),
     voicemeeterModeMenu: $('#voicemeeter-mode-menu'),
@@ -124,7 +139,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     initTheme();
     initHiddenState();
     initSessionDevices();
-    await loadAllData(true);
+    initDeviceVolumeFollowState();
+    await loadAllData();
+    await refreshGlobalEqEntry();
+    await refreshUnfocusedMuteStatus();
     await refreshCaptureStatus();
     setupEventListeners();
     await maybeStartVoicemeeter();
@@ -139,44 +157,66 @@ window.addEventListener('beforeunload', () => {
         unlisten();
     }
     if (state.captureStatusTimer) clearInterval(state.captureStatusTimer);
+    if (state.deviceVolumeSnapshotTimer) {
+        clearTimeout(state.deviceVolumeSnapshotTimer);
+        saveCurrentDeviceVolumeSnapshot();
+    }
 });
 
 // ── 数据加载 ─────────────────────────────────────────
-async function loadAllData(restoreSelectedProfile = false) {
+async function loadAllData() {
     state.loading = true;
     state.error = null;
     setStatus('加载中…');
 
     try {
-        const [outputDevices, inputDevices, sessions, profiles] =
+        const previousDefaultOutput = state.defaultOutput;
+        const previousSessions = state.sessions;
+        const [outputDevices, inputDevices, sessions] =
             await Promise.all([
                 AudioAPI.enumerateDevices('Output'),
                 AudioAPI.enumerateDevices('Input'),
                 AudioAPI.enumerateSessions(),
-                AudioAPI.listProfiles(),
             ]);
+
+        const nextDefaultOutput = outputDevices.find((d) => d.is_default) || null;
+        const defaultOutputChanged =
+            (previousDefaultOutput?.device_id || null) !==
+            (nextDefaultOutput?.device_id || null);
+        if (
+            state.deviceVolumeFollowEnabled &&
+            defaultOutputChanged &&
+            previousDefaultOutput
+        ) {
+            saveDeviceVolumeSnapshot(
+                previousDefaultOutput.device_id,
+                previousDefaultOutput.name,
+                previousSessions,
+            );
+        }
 
         state.outputDevices = outputDevices;
         state.inputDevices = inputDevices;
         state.sessions = sessions;
-        state.profiles = profiles;
         migrateLegacyLocalState();
-        await ensureDefaultProfile();
-        renderProfiles();
-        // 仅在启动时应用上次选中的配置，普通刷新不覆盖用户刚做的调整。
-        const selectedProfile = dom.profileSelect.value;
-        if (restoreSelectedProfile && selectedProfile) {
-            try {
-                await AudioAPI.applyProfile(selectedProfile);
-                const updated = await AudioAPI.enumerateSessions();
-                state.sessions = updated;
-            } catch { /* 静默跳过 */ }
-        }
-        state.defaultOutput = outputDevices.find((d) => d.is_default) || null;
+        state.defaultOutput = nextDefaultOutput;
         state.defaultInput = inputDevices.find((d) => d.is_default) || null;
         state.error = null;
 
-        setStatus('就绪');
+        let followResult = null;
+        if (
+            state.deviceVolumeFollowEnabled &&
+            nextDefaultOutput &&
+            (defaultOutputChanged || !previousDefaultOutput)
+        ) {
+            followResult = await activateDeviceVolumeSnapshot(nextDefaultOutput);
+        } else if (state.deviceVolumeFollowEnabled) {
+            saveCurrentDeviceVolumeSnapshot();
+        }
+
+        setStatus(followResult?.applied > 0
+            ? `已恢复 ${followResult.applied} 个应用在 ${nextDefaultOutput.name} 的音量`
+            : '就绪');
     } catch (err) {
         state.error = typeof err === 'string' ? err : JSON.stringify(err);
         setStatus('加载失败');
@@ -189,10 +229,166 @@ async function loadAllData(restoreSelectedProfile = false) {
 // ── 全量渲染 ─────────────────────────────────────────
 function renderAll() {
     renderSessionList();
+    renderUnfocusedMuteEntry();
+    renderGlobalEqEntry();
+    renderDeviceVolumeFollowEntry();
     renderDeviceList();
-    renderProfiles();
     renderStatusbar();
     renderError();
+}
+
+async function refreshGlobalEqEntry() {
+    try {
+        state.globalEqStatus = await AudioAPI.equalizerApoStatus();
+    } catch (err) {
+        console.warn('无法读取 Equalizer APO 状态', err);
+    }
+    renderGlobalEqEntry();
+}
+
+function renderGlobalEqEntry() {
+    const connected = Boolean(state.globalEqStatus?.connected);
+    dom.globalEqBtn.classList.toggle('active', connected);
+    dom.globalEqBtn.classList.toggle('offline', !connected);
+    dom.globalEqBtn.title = connected
+        ? 'Equalizer APO 已启用，点击调节输出 EQ 与麦克风处理'
+        : '通过 Equalizer APO 调节输出 EQ 与麦克风处理';
+}
+
+const DEVICE_VOLUME_FOLLOW_ENABLED_KEY = 'audio-hub-device-volume-follow';
+const DEVICE_VOLUME_SNAPSHOTS_KEY = 'audio-hub-device-volume-snapshots-v1';
+
+function initDeviceVolumeFollowState() {
+    state.deviceVolumeFollowEnabled =
+        localStorage.getItem(DEVICE_VOLUME_FOLLOW_ENABLED_KEY) === 'true';
+    try {
+        const saved = JSON.parse(
+            localStorage.getItem(DEVICE_VOLUME_SNAPSHOTS_KEY) || '{}',
+        );
+        state.deviceVolumeSnapshots = saved && typeof saved === 'object'
+            ? saved
+            : {};
+    } catch {
+        state.deviceVolumeSnapshots = {};
+    }
+    renderDeviceVolumeFollowEntry();
+}
+
+function renderDeviceVolumeFollowEntry() {
+    const enabled = state.deviceVolumeFollowEnabled;
+    dom.deviceVolumeFollowBtn.classList.toggle('active', enabled);
+    dom.deviceVolumeFollowBtn.classList.toggle('offline', !enabled);
+    dom.deviceVolumeFollowBtn.disabled = state.deviceVolumeFollowBusy;
+    dom.deviceVolumeFollowLabel.textContent = state.deviceVolumeFollowBusy
+        ? '同步音量…'
+        : '音量随扬声器';
+    dom.deviceVolumeFollowBtn.title = enabled
+        ? '已启用：切换默认输出设备时自动保存并恢复应用音量和静音状态'
+        : '按默认输出设备分别记住并恢复应用音量和静音状态';
+}
+
+function deviceVolumeSessionKey(session) {
+    return unfocusedMuteSessionKey(session);
+}
+
+function saveDeviceVolumeSnapshots() {
+    localStorage.setItem(
+        DEVICE_VOLUME_SNAPSHOTS_KEY,
+        JSON.stringify(state.deviceVolumeSnapshots),
+    );
+}
+
+function saveDeviceVolumeSnapshot(deviceId, deviceName, sessions) {
+    if (!deviceId || !Array.isArray(sessions)) return;
+    const savedSessions = {};
+    const autoMutedKeys = new Set(state.unfocusedMuteStatus.auto_muted_keys || []);
+    for (const session of sessions) {
+        const key = deviceVolumeSessionKey(session);
+        savedSessions[key] = {
+            display_name: session.display_name,
+            volume: Number(session.volume),
+            // 未聚焦静音是临时状态，不应写入扬声器的长期快照。
+            muted: Boolean(session.muted) && !autoMutedKeys.has(key),
+        };
+    }
+    state.deviceVolumeSnapshots[deviceId] = {
+        device_name: deviceName || '',
+        updated_at: Date.now(),
+        sessions: savedSessions,
+    };
+    saveDeviceVolumeSnapshots();
+}
+
+function saveCurrentDeviceVolumeSnapshot() {
+    if (!state.deviceVolumeFollowEnabled || state.deviceVolumeFollowBusy) return;
+    if (!state.defaultOutput) return;
+    saveDeviceVolumeSnapshot(
+        state.defaultOutput.device_id,
+        state.defaultOutput.name,
+        state.sessions,
+    );
+}
+
+function scheduleCurrentDeviceVolumeSnapshot() {
+    if (!state.deviceVolumeFollowEnabled || state.deviceVolumeFollowBusy) return;
+    if (state.deviceVolumeSnapshotTimer) {
+        clearTimeout(state.deviceVolumeSnapshotTimer);
+    }
+    state.deviceVolumeSnapshotTimer = setTimeout(() => {
+        state.deviceVolumeSnapshotTimer = null;
+        saveCurrentDeviceVolumeSnapshot();
+    }, 150);
+}
+
+async function activateDeviceVolumeSnapshot(device) {
+    const snapshot = state.deviceVolumeSnapshots[device.device_id];
+    if (!snapshot?.sessions) {
+        saveCurrentDeviceVolumeSnapshot();
+        return { found: false, applied: 0 };
+    }
+
+    state.deviceVolumeFollowBusy = true;
+    renderDeviceVolumeFollowEntry();
+    try {
+        const results = await Promise.allSettled(
+            state.sessions.map(async (session) => {
+                const saved = snapshot.sessions[deviceVolumeSessionKey(session)];
+                if (!saved || !Number.isFinite(saved.volume)) return false;
+                await AudioAPI.setSessionVolume(
+                    session.pid,
+                    Math.max(0, Math.min(1, saved.volume)),
+                );
+                await AudioAPI.setSessionMute(session.pid, Boolean(saved.muted));
+                return true;
+            }),
+        );
+        const applied = results.filter(
+            (result) => result.status === 'fulfilled' && result.value,
+        ).length;
+        state.sessions = await AudioAPI.enumerateSessions();
+        return { found: true, applied };
+    } finally {
+        state.deviceVolumeFollowBusy = false;
+        renderDeviceVolumeFollowEntry();
+    }
+}
+
+function toggleDeviceVolumeFollow() {
+    if (state.deviceVolumeFollowBusy) return;
+    state.deviceVolumeFollowEnabled = !state.deviceVolumeFollowEnabled;
+    localStorage.setItem(
+        DEVICE_VOLUME_FOLLOW_ENABLED_KEY,
+        state.deviceVolumeFollowEnabled ? 'true' : 'false',
+    );
+    if (state.deviceVolumeFollowEnabled) {
+        saveCurrentDeviceVolumeSnapshot();
+        setStatus(state.defaultOutput
+            ? `已记住 ${state.defaultOutput.name} 的当前应用音量`
+            : '已启用音量随扬声器');
+    } else {
+        setStatus('已关闭音量随扬声器，已保存的设备音量仍会保留');
+    }
+    renderDeviceVolumeFollowEntry();
 }
 
 // ── 会话列表（主体）──────────────────────────────────
@@ -288,6 +484,9 @@ function renderSessionItem(session, isHidden) {
     const icon = sessionIcon(session.display_name);
     const hiddenCls = isHidden ? ' hidden-item' : '';
     const stableKey = sessionKey(session);
+    const focusMuteManaged = unfocusedMuteApplicationKeys().has(
+        unfocusedMuteSessionKey(session),
+    );
     const simpleRouteActive = state.simpleRouteStatus.applications.some(
         (application) => application.key === stableKey,
     );
@@ -341,9 +540,11 @@ function renderSessionItem(session, isHidden) {
         ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>'
         : '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="6"/></svg>';
     return `
-        <div class="session-item${hiddenCls}" data-pid="${session.pid}">
+        <div class="session-item${hiddenCls}${focusMuteManaged ? ' focus-mute-managed' : ''}" data-pid="${session.pid}">
             <span class="session-icon">${icon}</span>
-            <span class="session-name" title="${escAttr(session.display_name)}">${esc(session.display_name)}</span>
+            <span class="session-name" title="${escAttr(focusMuteManaged
+        ? `${session.display_name} · 已启用未聚焦自动静音`
+        : session.display_name)}">${esc(session.display_name)}</span>
             <div class="volume-slider-wrapper">
                 <input type="range"
                        class="volume-slider"
@@ -551,11 +752,9 @@ function renderVoicemeeterEntry() {
         state.voicemeeterModeMenuOpen ? 'true' : 'false',
     );
     dom.voicemeeterBtnLabel.textContent = !connected
-        ? '未启用'
+        ? 'VoiceMeeter'
         : state.voicemeeterMode === 'simple'
-            ? count > 0
-                ? `简易模式 · ${count}`
-                : '简易模式'
+            ? '简易模式'
             : '高级模式';
 
     const simpleDescription = !installed
@@ -1768,6 +1967,7 @@ async function openGlobalEqEditor() {
         loadError = err;
     } finally {
         state.globalEqBusy = false;
+        renderGlobalEqEntry();
         if (loadError !== null) {
             dom.globalEqContent.innerHTML =
                 `<p class="plugin-error">插件状态读取失败：${esc(String(loadError))}</p>`;
@@ -2474,33 +2674,6 @@ function renderError() {
     }
 }
 
-// ── Profile 渲染 ─────────────────────────────────────
-function renderProfiles() {
-    const sel = dom.profileSelect;
-    // 优先用 localStorage 记住的上次配置，否则选第一个
-    const lastProfile = localStorage.getItem('audio-hub-profile');
-    const selected = sel.value || lastProfile || state.profiles[0] || '';
-    if (state.profiles.length === 0) {
-        sel.innerHTML = '<option value="">(无配置)</option>';
-    } else {
-        sel.innerHTML = state.profiles
-            .map(
-                (name) =>
-                    `<option value="${escAttr(name)}"${name === selected ? ' selected' : ''}>${esc(name)}</option>`,
-            )
-            .join('');
-    }
-    sel.value = state.profiles.includes(selected) ? selected : state.profiles[0] || '';
-    dom.volumePresetBtn.classList.toggle('active', state.volumePresetMenuOpen);
-    dom.volumePresetBtn.setAttribute(
-        'aria-expanded',
-        state.volumePresetMenuOpen ? 'true' : 'false',
-    );
-    dom.volumePresetMenu.classList.toggle('hidden', !state.volumePresetMenuOpen);
-    dom.profileSaveBtn.disabled = !sel.value;
-    dom.profileDeleteBtn.disabled = !sel.value || state.profiles.length <= 1;
-}
-
 // ── 设备抽屉 ─────────────────────────────────────────
 function openDrawer() {
     state.drawerOpen = true;
@@ -2627,20 +2800,6 @@ async function toggleDrawerDeviceMute(kind) {
     }
 }
 
-// 确保"默认配置"始终存在
-async function ensureDefaultProfile() {
-    // 仅在没有任何配置时创建初始默认配置
-    if (state.profiles.length === 0) {
-        const DEFAULT = '默认配置';
-        try {
-            await AudioAPI.saveProfile(DEFAULT, state.sessions);
-            state.profiles = await AudioAPI.listProfiles();
-        } catch {
-            // 静默失败
-        }
-    }
-}
-
 // ── Windows 通知与低频兜底刷新 ───────────────────────
 async function setupAudioNotifications() {
     try {
@@ -2653,7 +2812,15 @@ async function setupAudioNotifications() {
             'audio-devices-changed',
             () => scheduleAudioRefresh({ sessions: true, devices: true }),
         );
-        state.notificationUnlisteners.push(sessionUnlisten, devicesUnlisten);
+        const unfocusedMuteUnlisten = await eventApi.listen(
+            'unfocused-mute-changed',
+            refreshUnfocusedMuteStatus,
+        );
+        state.notificationUnlisteners.push(
+            sessionUnlisten,
+            devicesUnlisten,
+            unfocusedMuteUnlisten,
+        );
 
         const available = await AudioAPI.audioNotificationsAvailable();
         if (available) {
@@ -2702,12 +2869,20 @@ async function refreshRuntimeState({ sessions: refreshSessions, devices: refresh
     }
 
     state.refreshing = true;
+    const previousDefaultOutput = state.defaultOutput;
+    const previousSessions = state.sessions;
     const routeDropdownOpen = Boolean(
         dom.sessionList.querySelector('.route-dropdown:not(.hidden)'),
     );
 
     try {
-        const [sessionsResult, outputResult, inputResult, voicemeeterResult] =
+        const [
+            sessionsResult,
+            outputResult,
+            inputResult,
+            voicemeeterResult,
+            globalEqResult,
+        ] =
             await Promise.allSettled([
                 refreshSessions
                     ? AudioAPI.enumerateSessions()
@@ -2720,6 +2895,9 @@ async function refreshRuntimeState({ sessions: refreshSessions, devices: refresh
                     : Promise.resolve(null),
                 refreshDevices
                     ? AudioAPI.voicemeeterStatus()
+                    : Promise.resolve(null),
+                refreshDevices
+                    ? AudioAPI.equalizerApoStatus()
                     : Promise.resolve(null),
             ]);
 
@@ -2766,27 +2944,37 @@ async function refreshRuntimeState({ sessions: refreshSessions, devices: refresh
             }
         }
 
-        if (sessionsResult.status === 'fulfilled' && sessionsResult.value) {
-            let nextSessions = sessionsResult.value;
-            const knownPids = new Set(state.sessions.map((session) => session.pid));
-            const hasNewSession = nextSessions.some(
-                (session) => !knownPids.has(session.pid),
-            );
+        if (globalEqResult.status === 'fulfilled' && globalEqResult.value) {
+            state.globalEqStatus = globalEqResult.value;
+            renderGlobalEqEntry();
+        }
 
-            if (hasNewSession) {
-                const selectedProfile = dom.profileSelect.value;
-                if (selectedProfile) {
-                    try {
-                        await AudioAPI.applyProfile(selectedProfile);
-                        nextSessions = await AudioAPI.enumerateSessions();
-                    } catch {
-                        // 使用本轮结果；后续事件或兜底刷新会再次同步。
-                    }
+        if (sessionsResult.status === 'fulfilled' && sessionsResult.value) {
+            state.sessions = sessionsResult.value;
+            sessionsChanged = true;
+        }
+
+        if (state.deviceVolumeFollowEnabled && defaultOutputChanged) {
+            if (previousDefaultOutput) {
+                saveDeviceVolumeSnapshot(
+                    previousDefaultOutput.device_id,
+                    previousDefaultOutput.name,
+                    previousSessions,
+                );
+            }
+            if (state.defaultOutput) {
+                const followResult = await activateDeviceVolumeSnapshot(
+                    state.defaultOutput,
+                );
+                sessionsChanged = true;
+                if (followResult.applied > 0) {
+                    setStatus(
+                        `已恢复 ${followResult.applied} 个应用在 ${state.defaultOutput.name} 的音量`,
+                    );
                 }
             }
-
-            state.sessions = nextSessions;
-            sessionsChanged = true;
+        } else if (state.deviceVolumeFollowEnabled && sessionsChanged) {
+            saveCurrentDeviceVolumeSnapshot();
         }
 
         if (devicesChanged) {
@@ -2911,6 +3099,150 @@ function sessionKey(session) {
     return session.display_name.trim().toLocaleLowerCase();
 }
 
+function unfocusedMuteKey(displayName) {
+    return String(displayName || '')
+        .trim()
+        .toLocaleLowerCase()
+        .replace(/\.exe$/i, '');
+}
+
+function unfocusedMuteSessionKey(session) {
+    return unfocusedMuteKey(session.process_name || session.display_name);
+}
+
+function unfocusedMuteApplicationKeys() {
+    return new Set(
+        state.unfocusedMuteStatus.applications.map((application) => application.key),
+    );
+}
+
+async function refreshUnfocusedMuteStatus() {
+    try {
+        state.unfocusedMuteStatus = await AudioAPI.getUnfocusedMuteStatus();
+        state.unfocusedMuteMessage = null;
+    } catch (err) {
+        state.unfocusedMuteMessage = `读取失败：${err}`;
+    }
+    renderUnfocusedMuteEntry();
+    if (!dom.unfocusedMuteModal.classList.contains('hidden')) {
+        renderUnfocusedMuteEditor();
+    }
+}
+
+function renderUnfocusedMuteEntry() {
+    const count = state.unfocusedMuteStatus.applications.length;
+    dom.unfocusedMuteBtn.classList.toggle('active', count > 0);
+    dom.unfocusedMuteBtn.classList.toggle('offline', count === 0);
+    dom.unfocusedMuteBtnLabel.textContent = count > 0
+        ? `未聚焦静音 · ${count}`
+        : '未聚焦静音';
+}
+
+async function openUnfocusedMuteEditor() {
+    dom.unfocusedMuteModal.classList.remove('hidden');
+    state.unfocusedMuteMessage = null;
+    renderUnfocusedMuteEditor();
+    await refreshUnfocusedMuteStatus();
+}
+
+function closeUnfocusedMuteEditor() {
+    dom.unfocusedMuteModal.classList.add('hidden');
+}
+
+function renderUnfocusedMuteEditor() {
+    const selected = new Map(
+        state.unfocusedMuteStatus.applications.map((application) => [
+            application.key,
+            application,
+        ]),
+    );
+    const current = new Map();
+    for (const session of [...state.sessions].sort(compareAudioSessions)) {
+        if (session.pid === 0) continue;
+        const key = unfocusedMuteSessionKey(session);
+        if (!current.has(key)) current.set(key, session);
+    }
+
+    const rows = [];
+    for (const [key, session] of current) {
+        const checked = selected.has(key);
+        const autoMuted = state.unfocusedMuteStatus.auto_muted_keys.includes(key);
+        rows.push(`
+            <label class="focus-mute-app-row ${autoMuted ? 'auto-muted' : ''}">
+                <span class="focus-mute-app-icon">${sessionIcon(session.display_name)}</span>
+                <span class="focus-mute-app-copy">
+                    <strong>${esc(session.display_name)}</strong>
+                    <small>${autoMuted
+        ? '当前未聚焦，已自动静音'
+        : checked
+            ? '已加入自动静音列表'
+            : '未加入'}</small>
+                </span>
+                <span class="toggle-switch">
+                    <input type="checkbox" data-unfocused-mute-app
+                        data-app-key="${escAttr(key)}"
+                        data-display-name="${escAttr(session.display_name)}"
+                        ${checked ? 'checked' : ''}
+                        ${state.unfocusedMuteBusy ? 'disabled' : ''}>
+                    <span class="toggle-switch-track"></span>
+                </span>
+            </label>`);
+        selected.delete(key);
+    }
+
+    for (const application of selected.values()) {
+        rows.push(`
+            <label class="focus-mute-app-row unavailable">
+                <span class="focus-mute-app-icon">◌</span>
+                <span class="focus-mute-app-copy">
+                    <strong>${esc(application.display_name)}</strong>
+                    <small>当前没有活跃音频会话，设置仍会保留</small>
+                </span>
+                <span class="toggle-switch">
+                    <input type="checkbox" data-unfocused-mute-app
+                        data-app-key="${escAttr(application.key)}"
+                        data-display-name="${escAttr(application.display_name)}" checked
+                        ${state.unfocusedMuteBusy ? 'disabled' : ''}>
+                    <span class="toggle-switch-track"></span>
+                </span>
+            </label>`);
+    }
+
+    dom.unfocusedMuteContent.innerHTML = `
+        ${state.unfocusedMuteMessage
+        ? `<p class="focus-mute-message error">${esc(state.unfocusedMuteMessage)}</p>`
+        : ''}
+        <div class="focus-mute-app-list">
+            ${rows.length > 0
+        ? rows.join('')
+        : '<div class="empty-state">没有活跃的应用音频会话</div>'}
+        </div>`;
+}
+
+async function setUnfocusedMuteApplication(input) {
+    const enabled = input.checked;
+    state.unfocusedMuteBusy = true;
+    state.unfocusedMuteMessage = null;
+    renderUnfocusedMuteEditor();
+    try {
+        state.unfocusedMuteStatus = await AudioAPI.setUnfocusedMuteApplication(
+            input.dataset.appKey,
+            input.dataset.displayName,
+            enabled,
+        );
+        setStatus(enabled
+            ? `已为 ${input.dataset.displayName} 启用未聚焦自动静音`
+            : `已将 ${input.dataset.displayName} 移出未聚焦静音列表`);
+    } catch (err) {
+        state.unfocusedMuteMessage = `修改失败：${err}`;
+    } finally {
+        state.unfocusedMuteBusy = false;
+        renderUnfocusedMuteEntry();
+        renderUnfocusedMuteEditor();
+        renderSessionList();
+    }
+}
+
 // ── 主题 ─────────────────────────────────────────────
 function initTheme() {
     const saved = localStorage.getItem('audio-hub-theme');
@@ -2982,6 +3314,140 @@ async function setAboutAutostart(enabled) {
     }
 }
 
+async function loadCloseBehavior() {
+    state.closeBehaviorBusy = true;
+    state.closeBehaviorMessage = '正在读取设置…';
+    renderAboutCloseBehavior();
+    try {
+        const data = await AudioAPI.getCloseBehavior();
+        state.closeBehavior = data.behavior;
+        state.closeBehaviorChosen = data.chosen;
+        state.closeBehaviorMessage = '';
+    } catch (err) {
+        state.closeBehaviorMessage = `读取失败：${err}`;
+    } finally {
+        state.closeBehaviorBusy = false;
+        renderAboutCloseBehavior();
+    }
+}
+
+function renderAboutCloseBehavior() {
+    const button = $('#about-close-behavior-btn');
+    const status = $('#about-close-behavior-status');
+    if (button) {
+        const label =
+            state.closeBehavior === 'minimize' ? '最小化到托盘' : '退出程序';
+        button.textContent = state.closeBehaviorBusy ? '读取中…' : `${label} · 更改`;
+        button.disabled = state.closeBehaviorBusy;
+    }
+    if (status) {
+        status.textContent = state.closeBehaviorMessage || '';
+        status.classList.toggle(
+            'error',
+            Boolean(state.closeBehaviorMessage?.includes('失败')),
+        );
+    }
+}
+
+function openCloseBehaviorDialog(isFirstTime) {
+    state.closeBehaviorFirstChoice = isFirstTime;
+    state.closeBehaviorMessage = '';
+    const desc = $('#close-behavior-desc');
+    if (desc) {
+        desc.textContent = isFirstTime
+            ? '第一次使用：点击右上角 X 时，希望 Audio Hub 怎么做？选择后可在“关于”中随时更改。'
+            : '点击右上角 X 时，希望 Audio Hub 怎么做？';
+    }
+    $('#close-behavior-modal').classList.remove('hidden');
+    renderCloseBehaviorDialog();
+}
+
+function renderCloseBehaviorDialog() {
+    const minimizeBtn = $('#close-behavior-minimize-btn');
+    const quitBtn = $('#close-behavior-quit-btn');
+    const message = $('#close-behavior-message');
+    if (minimizeBtn) {
+        minimizeBtn.disabled = state.closeBehaviorBusy;
+    }
+    if (quitBtn) {
+        quitBtn.disabled = state.closeBehaviorBusy;
+    }
+    if (message) {
+        message.textContent = state.closeBehaviorMessage || '';
+        message.classList.toggle(
+            'error',
+            Boolean(state.closeBehaviorMessage?.includes('失败')),
+        );
+    }
+}
+
+async function chooseCloseBehavior(behavior) {
+    if (state.closeBehaviorBusy) {
+        return;
+    }
+    const wasFirstTime = state.closeBehaviorFirstChoice;
+    state.closeBehaviorBusy = true;
+    state.closeBehaviorMessage = '正在保存…';
+    renderCloseBehaviorDialog();
+    try {
+        const saved = await AudioAPI.setCloseBehavior(behavior);
+        state.closeBehavior = saved.behavior;
+        state.closeBehaviorChosen = true;
+        state.closeBehaviorMessage = '';
+        $('#close-behavior-modal').classList.add('hidden');
+        renderAboutCloseBehavior();
+        setStatus(
+            `关闭按钮：${
+                saved.behavior === 'minimize' ? '最小化到托盘' : '退出程序'
+            }`,
+        );
+        if (wasFirstTime) {
+            await applyCloseBehavior();
+        }
+    } catch (err) {
+        state.closeBehaviorMessage = `保存失败：${err}`;
+        renderCloseBehaviorDialog();
+    } finally {
+        state.closeBehaviorBusy = false;
+    }
+}
+
+function cancelCloseBehaviorDialog() {
+    if (state.closeBehaviorBusy) {
+        return;
+    }
+    if (state.closeBehaviorFirstChoice) {
+        // 首次未明确选择时按默认“最小化到托盘”处理，避免每次点击都询问。
+        chooseCloseBehavior('minimize');
+        return;
+    }
+    $('#close-behavior-modal').classList.add('hidden');
+}
+
+async function handleCloseClicked() {
+    try {
+        const data = await AudioAPI.getCloseBehavior();
+        state.closeBehavior = data.behavior;
+        state.closeBehaviorChosen = data.chosen;
+        if (!data.chosen) {
+            openCloseBehaviorDialog(true);
+            return;
+        }
+        await applyCloseBehavior();
+    } catch (err) {
+        console.error('读取关闭按钮行为失败，按退出处理：', err);
+        window.__TAURI__.core.invoke('win_close');
+    }
+}
+
+async function applyCloseBehavior() {
+    if (state.closeBehavior === 'minimize') {
+        await window.__TAURI__.core.invoke('win_minimize');
+    } else {
+        await window.__TAURI__.core.invoke('win_close');
+    }
+}
+
 // ── 降级对话框（Win11 API 受限时）─────────────────────
 function showFallbackDialog() {
     const msg =
@@ -2997,6 +3463,7 @@ function setupEventListeners() {
     $('#about-btn')?.addEventListener('click', async () => {
         $('#about-modal').classList.remove('hidden');
         await loadAboutAutostart();
+        await loadCloseBehavior();
     });
     $('#about-close-btn')?.addEventListener('click', () => {
         $('#about-modal').classList.add('hidden');
@@ -3009,14 +3476,37 @@ function setupEventListeners() {
     $('#about-autostart')?.addEventListener('change', (e) => {
         setAboutAutostart(e.target.checked);
     });
+    $('#about-close-behavior-btn')?.addEventListener('click', () => {
+        openCloseBehaviorDialog(false);
+    });
+    $('#close-behavior-minimize-btn')?.addEventListener('click', () => {
+        chooseCloseBehavior('minimize');
+    });
+    $('#close-behavior-quit-btn')?.addEventListener('click', () => {
+        chooseCloseBehavior('quit');
+    });
+    $('#close-behavior-cancel-btn')?.addEventListener('click', () => {
+        cancelCloseBehaviorDialog();
+    });
+    $('#close-behavior-modal')?.addEventListener('click', (e) => {
+        if (e.target === $('#close-behavior-modal')) {
+            cancelCloseBehaviorDialog();
+        }
+    });
+
+    dom.unfocusedMuteBtn.addEventListener('click', openUnfocusedMuteEditor);
+    dom.unfocusedMuteCloseBtn.addEventListener('click', closeUnfocusedMuteEditor);
+    dom.unfocusedMuteModal.addEventListener('click', (e) => {
+        if (e.target === dom.unfocusedMuteModal) closeUnfocusedMuteEditor();
+    });
+    dom.unfocusedMuteContent.addEventListener('change', (e) => {
+        const input = e.target.closest('[data-unfocused-mute-app]');
+        if (input && !input.disabled) setUnfocusedMuteApplication(input);
+    });
 
     dom.voicemeeterBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         state.voicemeeterModeMenuOpen = !state.voicemeeterModeMenuOpen;
-        if (state.voicemeeterModeMenuOpen && state.volumePresetMenuOpen) {
-            state.volumePresetMenuOpen = false;
-            renderProfiles();
-        }
         renderVoicemeeterEntry();
     });
     dom.voicemeeterModeMenu.addEventListener('click', async (e) => {
@@ -3025,16 +3515,7 @@ function setupEventListeners() {
         if (!option || option.disabled) return;
         await runVoicemeeterEntryAction(option.dataset.vmEntryAction);
     });
-    dom.volumePresetBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        state.volumePresetMenuOpen = !state.volumePresetMenuOpen;
-        if (state.volumePresetMenuOpen) {
-            state.voicemeeterModeMenuOpen = false;
-            renderVoicemeeterEntry();
-        }
-        renderProfiles();
-    });
-    dom.volumePresetMenu.addEventListener('click', (e) => e.stopPropagation());
+    dom.deviceVolumeFollowBtn.addEventListener('click', toggleDeviceVolumeFollow);
     dom.voicemeeterCloseBtn.addEventListener('click', closeVoicemeeterEditor);
     dom.voicemeeterModal.addEventListener('click', (e) => {
         if (e.target === dom.voicemeeterModal) closeVoicemeeterEditor();
@@ -3400,6 +3881,7 @@ function setupEventListeners() {
         } finally {
             state.globalEqBusy = false;
             state.microphoneBusy = false;
+            renderGlobalEqEntry();
             renderGlobalEqEditor();
         }
     });
@@ -3415,7 +3897,7 @@ function setupEventListeners() {
         window.__TAURI__.core.invoke('win_toggle_maximize');
     });
     $('#close-btn')?.addEventListener('click', () => {
-        window.__TAURI__.core.invoke('win_close');
+        handleCloseClicked();
     });
 
     // 底部默认设备点击 → 打开设备抽屉
@@ -3445,6 +3927,9 @@ function setupEventListeners() {
         if (e.key === 'Escape' && !dom.globalEqModal.classList.contains('hidden')) {
             closeGlobalEqEditor();
         }
+        if (e.key === 'Escape' && !dom.unfocusedMuteModal.classList.contains('hidden')) {
+            closeUnfocusedMuteEditor();
+        }
         if (e.key === 'Escape' && !dom.voicemeeterModal.classList.contains('hidden')) {
             if (state.voicemeeterSourceManagerTarget) {
                 state.voicemeeterSourceManagerTarget = null;
@@ -3472,6 +3957,7 @@ function setupEventListeners() {
         const pid = parseInt(slider.dataset.pid, 10);
         const volume = parseInt(slider.value, 10) / 100;
         updateLocalVolume(pid, volume);
+        scheduleCurrentDeviceVolumeSnapshot();
 
         AudioAPI.setSessionVolume(pid, volume).catch(() => {
             loadAllData();
@@ -3581,10 +4067,6 @@ function setupEventListeners() {
             state.voicemeeterModeMenuOpen = false;
             renderVoicemeeterEntry();
         }
-        if (state.volumePresetMenuOpen) {
-            state.volumePresetMenuOpen = false;
-            renderProfiles();
-        }
         dom.sessionList
             .querySelectorAll('.route-dropdown:not(.hidden)')
             .forEach((d) => d.classList.add('hidden'));
@@ -3611,81 +4093,6 @@ function setupEventListeners() {
         renderSessionList();
     });
 
-    dom.profileSaveBtn.addEventListener('click', async () => {
-        const name = dom.profileSelect.value;
-        if (!name) return;
-        try {
-            await AudioAPI.saveProfile(name, state.sessions);
-            setStatus(`已保存当前应用音量至「${name}」`);
-        } catch (err) {
-            console.error('保存音量预设失败：', err);
-            setStatus('保存音量预设失败');
-        }
-    });
-
-    // 音量预设新建（不允许重名）
-    dom.profileNewBtn.addEventListener('click', async () => {
-        const name = prompt('输入音量预设名称（例如“游戏”或“观影”）：');
-        if (!name || !name.trim()) return;
-        if (state.profiles.includes(name.trim())) {
-            setStatus(`音量预设「${name.trim()}」已存在`);
-            return;
-        }
-        try {
-            await AudioAPI.saveProfile(name.trim(), state.sessions);
-            state.profiles = await AudioAPI.listProfiles();
-            localStorage.setItem('audio-hub-profile', name.trim());
-            renderProfiles();
-            dom.profileSelect.value = name.trim();
-            setStatus(`已创建音量预设「${name.trim()}」`);
-        } catch (err) {
-            console.error('创建音量预设失败：', err);
-            setStatus('创建音量预设失败');
-        }
-    });
-
-    // 选择音量预设即应用，并记住上次选择。
-    dom.profileSelect.addEventListener('change', async () => {
-        const name = dom.profileSelect.value;
-        if (!name) return;
-        localStorage.setItem('audio-hub-profile', name);
-        try {
-            await AudioAPI.applyProfile(name);
-            await loadAllData();
-            setStatus(`已应用音量预设「${name}」`);
-        } catch (err) {
-            console.error('应用音量预设失败：', err);
-            setStatus('应用音量预设失败');
-        }
-    });
-
-    // 音量预设删除（仅剩一个时不可删除）
-    dom.profileDeleteBtn.addEventListener('click', async () => {
-        const name = dom.profileSelect.value;
-        if (!name) return;
-        if (state.profiles.length <= 1) {
-            setStatus('最后一个音量预设不可删除');
-            return;
-        }
-        if (!confirm(`确定删除音量预设「${name}」？`)) return;
-        try {
-            await AudioAPI.deleteProfile(name);
-            state.profiles = await AudioAPI.listProfiles();
-            const nextProfile = state.profiles[0] || '';
-            localStorage.setItem('audio-hub-profile', nextProfile);
-            renderProfiles();
-            if (nextProfile) {
-                dom.profileSelect.value = nextProfile;
-                await AudioAPI.applyProfile(nextProfile);
-                await loadAllData();
-            }
-            setStatus(`已删除「${name}」`);
-        } catch (err) {
-            console.error('删除音量预设失败：', err);
-            setStatus('删除音量预设失败');
-        }
-    });
-
     // 静音按钮：事件委托
     dom.sessionList.addEventListener('click', (e) => {
         const btn = e.target.closest('.mute-btn');
@@ -3694,6 +4101,7 @@ function setupEventListeners() {
         const pid = parseInt(btn.dataset.pid, 10);
         const newMuted = !btn.classList.contains('muted');
         updateLocalMute(pid, newMuted);
+        scheduleCurrentDeviceVolumeSnapshot();
 
         AudioAPI.setSessionMute(pid, newMuted).catch(() => {
             loadAllData();

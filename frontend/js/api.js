@@ -41,6 +41,19 @@ window.AudioAPI = {
         });
     },
 
+    /** 获取未聚焦自动静音应用及运行状态 */
+    async getUnfocusedMuteStatus() {
+        return await window.__TAURI__.core.invoke('get_unfocused_mute_status');
+    },
+
+    /** 添加或移除未聚焦自动静音应用 */
+    async setUnfocusedMuteApplication(key, displayName, enabled) {
+        return await window.__TAURI__.core.invoke(
+            'set_unfocused_mute_application',
+            { key: key, displayName: displayName, enabled: enabled },
+        );
+    },
+
     /** 获取输出设备或麦克风的 Windows 主音量 */
     async getDeviceVolume(deviceId) {
         return await window.__TAURI__.core.invoke('get_device_volume', {
@@ -285,6 +298,18 @@ window.AudioAPI = {
 
     async syncSimpleRouteMonitor() {
         return await window.__TAURI__.core.invoke('sync_simple_route_monitor');
+    },
+
+    /** 获取关闭按钮行为设置 */
+    async getCloseBehavior() {
+        return await window.__TAURI__.core.invoke('get_close_behavior');
+    },
+
+    /** 设置关闭按钮行为（minimize / quit） */
+    async setCloseBehavior(behavior) {
+        return await window.__TAURI__.core.invoke('set_close_behavior', {
+            behavior: behavior,
+        });
     },
 
     // ── Profile ────────────────────────────────────────

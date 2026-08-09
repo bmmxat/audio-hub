@@ -1,10 +1,13 @@
 mod audio;
 mod autostart;
 mod plugins;
+mod settings;
+mod tray;
+mod unfocused_mute;
 
 use audio::{
     device::{AudioDevice, AudioSession, DeviceDirection, DeviceVolumeState},
-    notifications::AudioNotificationWatcher,
+    notifications::{AudioNotificationWatcher, DEVICES_CHANGED_EVENT, SESSION_CHANGED_EVENT},
     process_loopback::{
         ProcessCaptureManager, ProcessCaptureResult, ProcessCaptureStatus, ProcessLoopbackSupport,
     },
@@ -17,7 +20,8 @@ use plugins::equalizer_apo::{
     MicrophoneConfig, MicrophoneConfigState,
 };
 use plugins::voicemeeter::{self, VoicemeeterConfiguration, VoicemeeterManager, VoicemeeterStatus};
-use tauri::Manager;
+use tauri::{Emitter, Listener, Manager};
+use unfocused_mute::{UNFOCUSED_MUTE_CHANGED_EVENT, UnfocusedMuteManager, UnfocusedMuteStatus};
 
 /// 获取默认输出设备的端点 ID。
 #[tauri::command]
@@ -441,8 +445,13 @@ fn reveal_capture_file(path: String) -> Result<(), String> {
 
 // ── 窗口控制 ──────────────────────────────────────────
 #[tauri::command]
-fn win_minimize(window: tauri::Window) {
-    let _ = window.minimize();
+fn win_minimize(window: tauri::Window, app: tauri::AppHandle) {
+    if tray::is_available(&app) {
+        // 托盘常驻时，最小化即隐藏到系统托盘。
+        let _ = window.hide();
+    } else {
+        let _ = window.minimize();
+    }
 }
 #[tauri::command]
 fn win_toggle_maximize(window: tauri::Window) {
@@ -453,11 +462,72 @@ fn win_toggle_maximize(window: tauri::Window) {
     }
 }
 #[tauri::command]
-fn win_close(window: tauri::Window, capture_manager: tauri::State<'_, ProcessCaptureManager>) {
+fn win_close(
+    window: tauri::Window,
+    capture_manager: tauri::State<'_, ProcessCaptureManager>,
+    unfocused_mute_manager: tauri::State<'_, UnfocusedMuteManager>,
+) {
     if capture_manager.status().active {
         let _ = capture_manager.stop();
     }
+    unfocused_mute_manager.restore_all();
     let _ = window.close();
+}
+
+/// 关闭按钮行为（右上角 X）：由前端在首次询问后决定调用 win_minimize 还是 win_close。
+#[tauri::command]
+fn get_close_behavior(app: tauri::AppHandle) -> Result<settings::CloseBehaviorState, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定配置目录：{error}"))?;
+    let current = settings::load(&app_data_dir);
+    Ok(settings::CloseBehaviorState {
+        behavior: current.close_behavior,
+        chosen: current.close_behavior_chosen,
+    })
+}
+
+#[tauri::command]
+fn set_close_behavior(
+    behavior: settings::CloseBehavior,
+    app: tauri::AppHandle,
+) -> Result<settings::CloseBehaviorState, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定配置目录：{error}"))?;
+    let mut current = settings::load(&app_data_dir);
+    current.close_behavior = behavior;
+    current.close_behavior_chosen = true;
+    settings::save(&app_data_dir, &current)?;
+    Ok(settings::CloseBehaviorState {
+        behavior: current.close_behavior,
+        chosen: current.close_behavior_chosen,
+    })
+}
+
+/// 获取未聚焦自动静音列表及当前运行状态。
+#[tauri::command]
+fn get_unfocused_mute_status(
+    manager: tauri::State<'_, UnfocusedMuteManager>,
+) -> UnfocusedMuteStatus {
+    manager.status()
+}
+
+/// 添加或移除一个未聚焦自动静音应用。
+#[tauri::command]
+fn set_unfocused_mute_application(
+    key: String,
+    display_name: String,
+    enabled: bool,
+    manager: tauri::State<'_, UnfocusedMuteManager>,
+    app: tauri::AppHandle,
+) -> Result<UnfocusedMuteStatus, String> {
+    let status = manager.set_application(key, display_name, enabled)?;
+    let _ = app.emit(SESSION_CHANGED_EVENT, ());
+    let _ = app.emit(UNFOCUSED_MUTE_CHANGED_EVENT, ());
+    Ok(status)
 }
 
 // ── Profile 命令 ─────────────────────────────────────
@@ -502,12 +572,38 @@ pub fn run() {
             app.manage(AudioNotificationWatcher::start(app.handle().clone()));
             app.manage(ProcessCaptureManager::default());
             app.manage(VoicemeeterManager::default());
+            app.manage(tray::TrayState::default());
             let app_data_dir = app
                 .path()
                 .app_data_dir()
                 .map_err(|error| format!("无法确定简易流转配置目录：{error}"))?;
             app.manage(SimpleRouteManager::load(&app_data_dir));
+            app.manage(UnfocusedMuteManager::start(
+                app.handle().clone(),
+                app_data_dir,
+            ));
+
+            if let Err(error) = tray::build(app.handle()) {
+                eprintln!("系统托盘初始化失败，最小化将退回任务栏窗口：{error}");
+            }
+
+            let tray_app = app.handle().clone();
+            app.listen(DEVICES_CHANGED_EVENT, move |_| {
+                tray::refresh(&tray_app);
+            });
+            let tray_app = app.handle().clone();
+            app.listen(SESSION_CHANGED_EVENT, move |_| {
+                tray::refresh(&tray_app);
+            });
+
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if window.label() == "main"
+                && matches!(event, tauri::WindowEvent::CloseRequested { .. })
+            {
+                window.state::<UnfocusedMuteManager>().restore_all();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             get_default_device_id,
@@ -562,6 +658,10 @@ pub fn run() {
             win_minimize,
             win_toggle_maximize,
             win_close,
+            get_close_behavior,
+            set_close_behavior,
+            get_unfocused_mute_status,
+            set_unfocused_mute_application,
             save_profile,
             load_profile,
             list_profiles,

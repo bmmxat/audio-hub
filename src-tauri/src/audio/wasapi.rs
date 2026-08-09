@@ -305,6 +305,11 @@ fn snapshot_process_names() -> std::collections::HashMap<u32, String> {
     names
 }
 
+/// 通过 ToolHelp 快照读取进程名，避免对受保护进程调用 `OpenProcess`。
+pub(crate) fn process_name(pid: u32) -> Option<String> {
+    snapshot_process_names().remove(&pid)
+}
+
 /// 枚举所有输出设备上的音频会话。
 ///
 /// 遍历每个活跃的渲染设备，汇总其上所有音频会话。
@@ -357,11 +362,12 @@ pub fn enumerate_sessions() -> Result<Vec<AudioSession>> {
                 // 2. ToolHelp 快照反查进程名（无权限限制）
                 // 3. 系统音效特殊标记
                 // 以上都无法获取 → 跳过
+                let process_name = process_names.get(&pid).cloned();
                 let raw_name = session_ctrl.GetDisplayName().ok();
                 let display_name = raw_name
                     .and_then(|pwstr| pwstr.to_string().ok())
                     .filter(|s| !s.is_empty() && !s.starts_with('@'))
-                    .or_else(|| process_names.get(&pid).cloned())
+                    .or_else(|| process_name.clone())
                     .or_else(|| {
                         if pid == 0 {
                             Some("系统音效".to_string())
@@ -387,6 +393,7 @@ pub fn enumerate_sessions() -> Result<Vec<AudioSession>> {
 
                 all_sessions.push(AudioSession {
                     display_name,
+                    process_name,
                     pid,
                     volume,
                     muted,

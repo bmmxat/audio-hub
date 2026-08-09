@@ -62,8 +62,18 @@
                 <h2>应用音量</h2>
                 <span class="session-count-badge" id="session-count">—</span>
                 <div class="header-actions">
+                    <button id="unfocused-mute-btn" class="btn plugin-entry-btn offline"
+                        title="选择失去前台焦点后自动静音的应用">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                            stroke-linejoin="round">
+                            <path d="M11 5 6 9H2v6h4l5 4V5z"/>
+                            <path d="m22 9-6 6"/><path d="m16 9 6 6"/>
+                        </svg>
+                        <span id="unfocused-mute-btn-label">未聚焦静音</span>
+                    </button>
                     <div class="voicemeeter-entry-wrapper">
-                        <button id="voicemeeter-btn" class="btn plugin-entry-btn"
+                        <button id="voicemeeter-btn" class="btn plugin-entry-btn offline"
                             title="选择简易流转或高级路由工作流" aria-haspopup="menu"
                             aria-expanded="false">
                             <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
@@ -72,13 +82,13 @@
                                 <path d="M4 7h9"/><path d="M11 4l3 3-3 3"/>
                                 <path d="M20 17h-9"/><path d="M13 14l-3 3 3 3"/>
                             </svg>
-                            <span id="voicemeeter-btn-label">声音流转</span>
+                            <span id="voicemeeter-btn-label">VoiceMeeter</span>
                             <span class="plugin-entry-chevron" aria-hidden="true">▾</span>
                         </button>
                         <div id="voicemeeter-mode-menu" class="voicemeeter-mode-menu hidden"
                             role="menu"></div>
                     </div>
-                    <button id="global-eq-btn" class="btn plugin-entry-btn" title="通过 Equalizer APO 调节输出 EQ 与麦克风处理">
+                    <button id="global-eq-btn" class="btn plugin-entry-btn offline" title="通过 Equalizer APO 调节输出 EQ 与麦克风处理">
                         <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
                             stroke="currentColor" stroke-width="2" stroke-linecap="round">
                             <line x1="4" y1="7" x2="20" y2="7"/>
@@ -88,35 +98,17 @@
                         </svg>
                         <span>Equalizer APO</span>
                     </button>
-                    <div class="volume-preset-wrapper">
-                        <button id="volume-preset-btn" class="btn volume-preset-entry"
-                            title="管理应用音量和静音预设" aria-haspopup="menu"
-                            aria-expanded="false">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-                                stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                                stroke-linejoin="round">
-                                <path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z"/>
-                            </svg>
-                            <span>音量预设</span>
-                            <span class="plugin-entry-chevron" aria-hidden="true">▾</span>
-                        </button>
-                        <div id="volume-preset-menu" class="volume-preset-menu hidden" role="menu">
-                            <div class="volume-preset-heading">
-                                <strong>音量预设</strong>
-                                <small>仅保存应用音量与静音</small>
-                            </div>
-                            <select id="profile-select" class="profile-select"
-                                title="选择音量预设"></select>
-                            <button id="profile-save-btn" class="btn volume-preset-primary">
-                                保存当前音量
-                            </button>
-                            <div class="volume-preset-actions">
-                                <button id="profile-new-btn" class="btn">新建预设</button>
-                                <button id="profile-delete-btn" class="btn danger">删除预设</button>
-                            </div>
-                            <p>调整应用音量不会自动覆盖预设。</p>
-                        </div>
-                    </div>
+                    <button id="device-volume-follow-btn" class="btn plugin-entry-btn offline"
+                        title="按默认输出设备分别记住并恢复应用音量和静音状态">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                            stroke-linejoin="round">
+                            <path d="M11 5 6 9H2v6h4l5 4V5z"/>
+                            <path d="M16 8h5"/><path d="m19 5 3 3-3 3"/>
+                            <path d="M21 16h-5"/><path d="m18 13-3 3 3 3"/>
+                        </svg>
+                        <span id="device-volume-follow-label">音量随扬声器</span>
+                    </button>
                     <span class="badge hidden-badge" id="hidden-badge" title="点击显示/隐藏">👁️ 隐藏 0</span>
                 </div>
             </div>
@@ -166,7 +158,58 @@
                 </span>
             </label>
             <p id="about-autostart-status" class="about-option-status"></p>
+            <div class="about-autostart-row">
+                <span>
+                    <strong>关闭按钮行为</strong>
+                    <small>点击右上角 X 时的行为</small>
+                </span>
+                <button id="about-close-behavior-btn" class="btn btn-sm" type="button">
+                    更改
+                </button>
+            </div>
+            <p id="about-close-behavior-status" class="about-option-status"></p>
             <button id="about-close-btn" class="btn btn-sm">关闭</button>
+        </div>
+    </div>
+
+    <!-- 关闭按钮行为选择 -->
+    <div id="close-behavior-modal" class="about-modal hidden">
+        <div class="about-card">
+            <h2>关闭按钮行为</h2>
+            <p class="about-desc" id="close-behavior-desc">
+                点击右上角 X 时，希望 Audio Hub 怎么做？
+            </p>
+            <div class="close-behavior-options">
+                <button id="close-behavior-minimize-btn" class="btn" type="button">
+                    最小化到托盘
+                </button>
+                <button id="close-behavior-quit-btn" class="btn" type="button">
+                    退出程序
+                </button>
+            </div>
+            <p id="close-behavior-message" class="about-option-status"></p>
+            <button id="close-behavior-cancel-btn" class="btn btn-sm" type="button">
+                取消
+            </button>
+        </div>
+    </div>
+
+    <!-- 未聚焦自动静音应用管理 -->
+    <div id="unfocused-mute-modal" class="focus-mute-modal hidden">
+        <div class="focus-mute-card">
+            <div class="eq-header">
+                <div class="eq-title-row">
+                    <h2>未聚焦自动静音</h2>
+                    <span class="eq-help header-help" tabindex="0" role="note"
+                        aria-label="未聚焦自动静音说明"
+                        data-tooltip="按应用进程名匹配。应用失去 Windows 前台焦点时自动静音，重新聚焦、移出列表或退出 Audio Hub 时恢复自动静音前的状态。">?</span>
+                </div>
+                <button id="unfocused-mute-close-btn" class="btn btn-icon" title="关闭">✕</button>
+            </div>
+            <p class="focus-mute-description">
+                勾选需要管理的应用。应用需要先产生声音，才会出现在当前列表中。
+            </p>
+            <div id="unfocused-mute-content" class="focus-mute-content"></div>
         </div>
     </div>
 
