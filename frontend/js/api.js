@@ -109,6 +109,11 @@ window.AudioAPI = {
         return await window.__TAURI__.core.invoke('open_sound_settings');
     },
 
+    /** 使用系统默认浏览器打开项目主页 */
+    async openProjectHomepage() {
+        return await window.__TAURI__.core.invoke('open_project_homepage');
+    },
+
     /** Windows 原生音频通知监听器是否可用 */
     async audioNotificationsAvailable() {
         return await window.__TAURI__.core.invoke(

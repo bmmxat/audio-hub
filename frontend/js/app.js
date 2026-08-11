@@ -67,6 +67,7 @@ const state = {
         applications: [],
         auto_muted_keys: [],
         foreground_key: null,
+        paused: false,
     },
     unfocusedMuteBusy: false,
     unfocusedMuteMessage: null,
@@ -3131,11 +3132,19 @@ async function refreshUnfocusedMuteStatus() {
 
 function renderUnfocusedMuteEntry() {
     const count = state.unfocusedMuteStatus.applications.length;
-    dom.unfocusedMuteBtn.classList.toggle('active', count > 0);
-    dom.unfocusedMuteBtn.classList.toggle('offline', count === 0);
-    dom.unfocusedMuteBtnLabel.textContent = count > 0
-        ? `未聚焦静音 · ${count}`
-        : '未聚焦静音';
+    const paused = Boolean(state.unfocusedMuteStatus.paused);
+    dom.unfocusedMuteBtn.classList.toggle('active', count > 0 && !paused);
+    dom.unfocusedMuteBtn.classList.toggle('offline', count === 0 || paused);
+    if (paused && count > 0) {
+        dom.unfocusedMuteBtnLabel.textContent = '未聚焦静音 · 暂停';
+    } else if (count > 0) {
+        dom.unfocusedMuteBtnLabel.textContent = `未聚焦静音 · ${count}`;
+    } else {
+        dom.unfocusedMuteBtnLabel.textContent = '未聚焦静音';
+    }
+    dom.unfocusedMuteBtn.title = paused && count > 0
+        ? '自动静音已从系统托盘暂停，点击管理应用列表'
+        : '选择失去前台焦点后自动静音的应用';
 }
 
 async function openUnfocusedMuteEditor() {
@@ -3209,6 +3218,9 @@ function renderUnfocusedMuteEditor() {
     }
 
     dom.unfocusedMuteContent.innerHTML = `
+        ${state.unfocusedMuteStatus.paused
+        ? '<p class="focus-mute-message">自动静音已从系统托盘暂停，重新启用后继续按此列表运行。</p>'
+        : ''}
         ${state.unfocusedMuteMessage
         ? `<p class="focus-mute-message error">${esc(state.unfocusedMuteMessage)}</p>`
         : ''}
@@ -3442,7 +3454,7 @@ async function handleCloseClicked() {
 
 async function applyCloseBehavior() {
     if (state.closeBehavior === 'minimize') {
-        await window.__TAURI__.core.invoke('win_minimize');
+        await window.__TAURI__.core.invoke('win_hide_to_tray');
     } else {
         await window.__TAURI__.core.invoke('win_close');
     }
@@ -3467,6 +3479,13 @@ function setupEventListeners() {
     });
     $('#about-close-btn')?.addEventListener('click', () => {
         $('#about-modal').classList.add('hidden');
+    });
+    $('#about-github-btn')?.addEventListener('click', async () => {
+        try {
+            await AudioAPI.openProjectHomepage();
+        } catch (err) {
+            setStatus(`无法打开 GitHub：${err}`, true);
+        }
     });
     $('#about-modal')?.addEventListener('click', (e) => {
         if (e.target === $('#about-modal')) {

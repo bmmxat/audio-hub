@@ -107,6 +107,16 @@ fn open_sound_settings() {
     wasapi::open_sound_settings();
 }
 
+/// 使用系统默认浏览器打开 Audio Hub 的 GitHub 项目主页。
+#[tauri::command]
+fn open_project_homepage() -> Result<(), String> {
+    std::process::Command::new("explorer.exe")
+        .arg("https://github.com/bmmxat/audio-hub")
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("无法打开项目主页：{error}"))
+}
+
 #[tauri::command]
 fn equalizer_apo_status(app: tauri::AppHandle) -> Result<EqualizerApoStatus, String> {
     let app_data_dir = app
@@ -445,9 +455,13 @@ fn reveal_capture_file(path: String) -> Result<(), String> {
 
 // ── 窗口控制 ──────────────────────────────────────────
 #[tauri::command]
-fn win_minimize(window: tauri::Window, app: tauri::AppHandle) {
+fn win_minimize(window: tauri::Window) {
+    let _ = window.minimize();
+}
+
+#[tauri::command]
+fn win_hide_to_tray(window: tauri::Window, app: tauri::AppHandle) {
     if tray::is_available(&app) {
-        // 托盘常驻时，最小化即隐藏到系统托盘。
         let _ = window.hide();
     } else {
         let _ = window.minimize();
@@ -474,7 +488,7 @@ fn win_close(
     let _ = window.close();
 }
 
-/// 关闭按钮行为（右上角 X）：由前端在首次询问后决定调用 win_minimize 还是 win_close。
+/// 关闭按钮行为（右上角 X）：由前端在首次询问后决定隐藏到托盘或退出。
 #[tauri::command]
 fn get_close_behavior(app: tauri::AppHandle) -> Result<settings::CloseBehaviorState, String> {
     let app_data_dir = app
@@ -527,6 +541,7 @@ fn set_unfocused_mute_application(
     let status = manager.set_application(key, display_name, enabled)?;
     let _ = app.emit(SESSION_CHANGED_EVENT, ());
     let _ = app.emit(UNFOCUSED_MUTE_CHANGED_EVENT, ());
+    tray::refresh(&app);
     Ok(status)
 }
 
@@ -591,11 +606,6 @@ pub fn run() {
             app.listen(DEVICES_CHANGED_EVENT, move |_| {
                 tray::refresh(&tray_app);
             });
-            let tray_app = app.handle().clone();
-            app.listen(SESSION_CHANGED_EVENT, move |_| {
-                tray::refresh(&tray_app);
-            });
-
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -620,6 +630,7 @@ pub fn run() {
             set_default_device,
             set_app_output_device,
             open_sound_settings,
+            open_project_homepage,
             equalizer_apo_status,
             equalizer_apo_enabled_devices,
             equalizer_apo_processing_state,
@@ -656,6 +667,7 @@ pub fn run() {
             stop_process_capture,
             reveal_capture_file,
             win_minimize,
+            win_hide_to_tray,
             win_toggle_maximize,
             win_close,
             get_close_behavior,

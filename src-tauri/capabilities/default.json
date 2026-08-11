@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "默认权限 — 允许调用自定义 Tauri 命令",
-  "windows": ["main", "volume-panel"],
+  "windows": ["main"],
   "permissions": [
     "core:default",
     "core:window:allow-minimize",

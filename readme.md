@@ -9,42 +9,105 @@ Audio Hub 使用 Rust、Tauri 2 和 Windows WASAPI 构建，将应用音量、�
 可选的 VoiceMeeter 流转控制集中在一个界面中。
 基础音频管理无需安装任何虚拟声卡或第三方插件。
 
-当前版本：`0.2.0`
+当前版本：`0.3.0`
+
+## 主要功能
+
+- **应用音量管理**：查看活跃音频会话，独立调整音量、静音和输出设备。
+- **设备快速切换**：管理默认扬声器、耳机和麦克风，并控制设备主音量。
+- **智能音量状态**：按不同扬声器记忆应用音量，支持应用未聚焦时自动静音。
+- **VoiceMeeter 流转**：提供面向普通用户的简易模式，以及双混音、物理麦克风和
+  DSP 控制的高级模式。
+- **Equalizer APO 调音**：按设备保存十段输出 EQ，并支持麦克风增益和 RNNoise。
+- **应用声音录制**：使用 Windows Process Loopback 录制指定应用及其子进程。
+- **本地与轻量**：无账号、无云端同步、无遥测；基础功能不依赖虚拟声卡或插件。
+
+## v0.3.0 更新
+
+以下内容以远端 `origin/master`（`3525b5b`）为基线整理：
+
+- **新增 VoiceMeeter 完整工作流**：通过官方 Remote API 自动检测 Standard、Banana
+  和 Potato，通过API控制VoiceMeeter行为，支持**简易流转模式**、**高级路由模式**，支持启动、关闭、打开原界面及重启音频引擎；Audio Hub 不捆绑或静默
+  安装 VoiceMeeter。
+- **新增简易流转模式**：应用列表可直接将一个或多个程序“传到麦克风”，自动配置
+  `VoiceMeeter Input`、B1 虚拟麦克风、物理麦克风混入和 A1 本地监听；停止时恢复
+  应用输出及默认麦克风，异常退出后也能依据恢复记录继续安全收尾。
+- **新增高级路由模式**：提供主混音、AUX 混音、物理麦克风、A1/B1/B2 路由、增益
+  和静音控制，并按 VoiceMeeter 版本开放压缩器、噪声门、降噪、可听度和六段均衡；
+  同一设备同时启用 Equalizer APO 时显示双重处理提示。
+- **新增未聚焦静音**：可选择应用在失去 Windows 前台焦点后自动静音，重新聚焦、
+  移出列表或退出 Audio Hub 时恢复原状态，并提供异常退出恢复保护。
+- **新增音量随扬声器**：按默认输出设备分别记忆应用音量和手动静音，切换扬声器时
+  自动保存与恢复；未聚焦产生的临时静音不会污染设备快照。旧“音量预设”入口及
+  自动套用逻辑已移除，但旧预设文件仍会保留。
+- **新增精简系统托盘与关闭行为**：可快速打开主界面、暂停或恢复未聚焦静音，以及
+  切换默认输出设备和麦克风；关闭按钮可选择隐藏到托盘或退出，最小化按钮固定进入
+  任务栏，并修复托盘菜单刷新导致的设备切换失效问题。
+- **统一主界面状态入口**：未启用时使用中性样式，实际生效后使用强调色。VoiceMeeter
+  根据状态显示“VoiceMeeter”“简易模式”或“高级模式”，Equalizer APO 启用后
+  同步显示强调状态。
 
 ## 界面预览
 
-### 应用音量与快捷控制
+### 应用音量与快捷状态
 
-集中管理系统音效和各个应用的音量、静音及输出设备，并从顶部统一控制
-未聚焦静音、VoiceMeeter、Equalizer APO 和音量随扬声器。
+集中调节系统与应用音量，并从顶部查看和控制未聚焦静音、VoiceMeeter、
+Equalizer APO 及音量随扬声器。功能启用后使用紫色强调状态。
 
 ![Audio Hub 应用音量与快捷控制](docs/images/audio-hub-main.png)
 
-### 应用输出路由
+### 应用输出路由与音频设备
+
+#### 单个应用输出设备
 
 为单个应用选择独立的输出设备，或随时恢复使用系统默认设备。
 
 ![Audio Hub 应用输出路由](docs/images/audio-hub-app-routing.png)
 
-### 音频设备与设备音量
+#### 默认设备与设备音量
 
 切换默认输出设备和麦克风，并直接调节当前默认设备的主音量。
 
 ![Audio Hub 音频设备与设备音量](docs/images/audio-hub-device-volume.png)
 
-### Equalizer APO 输出 EQ
+### 未聚焦自动静音
+
+从当前正在发声的应用中选择管理对象；应用失去 Windows 前台焦点后自动静音，
+重新聚焦后恢复声音。
+
+![Audio Hub 未聚焦自动静音应用列表](docs/images/audio-hub-unfocused-mute.png)
+
+### VoiceMeeter 简易流转
+
+在主界面直接把应用声音传到麦克风，并清楚显示当前流转状态和监听设备。
+
+![Audio Hub VoiceMeeter 简易流转](docs/images/audio-hub-voicemeeter-simple.png)
+
+### VoiceMeeter 高级路由
+
+分别管理物理麦克风、主混音与 AUX 混音的应用来源、增益、监听和虚拟麦克风输出。
+
+![Audio Hub VoiceMeeter 高级路由工作流](docs/images/audio-hub-voicemeeter-advanced.png)
+
+主混音与 AUX 混音的应用来源使用独立选择弹层，点击即可加入或移除应用。
+
+![Audio Hub VoiceMeeter 应用来源选择](docs/images/audio-hub-voicemeeter-source-picker.png)
+
+### Equalizer APO 音频处理
+
+#### 输出 EQ
 
 为不同输出设备保存独立的十段 EQ 音色预设，并提供前级增益和自动防削波余量。
 
 ![Audio Hub Equalizer APO 输出 EQ](docs/images/audio-hub-output-eq.png)
 
-### 麦克风处理与 RNNoise
+#### 麦克风处理与 RNNoise
 
 为麦克风设置输入增益，并调用用户提供的 RNNoise VST2 插件进行智能降噪。
 
 ![Audio Hub 麦克风处理与 RNNoise](docs/images/audio-hub-microphone-processing.png)
 
-## 功能概览
+## 功能详解
 
 ### 应用音量管理
 
@@ -92,10 +155,11 @@ Audio Hub 使用 Rust、Tauri 2 和 Windows WASAPI 构建，将应用音量、�
 
 ### 系统托盘与关闭行为
 
-- 系统托盘菜单可打开 Audio Hub、查看默认输出主音量、切换静音，以及切换默认
-  输出设备和默认麦克风。
-- “音量调节…”会打开轻量小面板，可直接调整默认输出设备音量和静音。
+- 系统托盘菜单可打开 Audio Hub，以及切换默认输出设备和默认麦克风。
+- 已配置未聚焦静音应用时，托盘会显示运行状态，并可一键暂停或恢复；暂停会立即
+  恢复由该功能自动静音的应用，重新启动 Audio Hub 后默认恢复运行。
 - 左键单击托盘图标可恢复并聚焦主窗口。
+- 主窗口的最小化按钮始终最小化到任务栏，不会隐藏到托盘。
 - 第一次点击主窗口右上角关闭按钮时，可选择“最小化到托盘”或“退出程序”。
 - 关闭按钮行为保存在本地，并可随时从“关于”中更改。
 
@@ -348,12 +412,12 @@ Microsoft WebView2 Runtime；VoiceMeeter、Equalizer APO 等可选组件不会�
 
 ```text
 audio-hub/
-├─ frontend/                    # 主界面与托盘音量小面板
+├─ frontend/                    # HTML、CSS、JavaScript 主界面
 ├─ src-tauri/src/audio/         # WASAPI、通知、旧版预设和进程录制
 ├─ src-tauri/src/plugins/       # Equalizer APO 与 VoiceMeeter 集成
 ├─ src-tauri/src/autostart.rs   # Windows 当前用户自启动
 ├─ src-tauri/src/settings.rs    # 关闭行为与未聚焦静音列表
-├─ src-tauri/src/tray.rs        # 系统托盘、设备菜单与音量面板
+├─ src-tauri/src/tray.rs        # 系统托盘、设备菜单与快捷状态控制
 ├─ src-tauri/src/unfocused_mute.rs # 前台进程监听和自动静音恢复
 ├─ archive/                     # 已归档、未参与编译的实验模块
 └─ src-tauri/tauri.conf.json    # Tauri 窗口和 NSIS 打包配置

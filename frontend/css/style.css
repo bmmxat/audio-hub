@@ -1162,7 +1162,30 @@ input[type="range"].drawer-volume-slider::-webkit-slider-thumb {
 .about-author {
     color: var(--text-muted);
     font-size: 12px;
+    margin-bottom: 10px;
+}
+
+.about-github-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
     margin-bottom: 16px;
+    padding: 7px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.about-github-link:hover {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent-light);
 }
 
 .about-autostart-row {

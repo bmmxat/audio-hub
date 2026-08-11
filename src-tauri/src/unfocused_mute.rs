@@ -31,6 +31,7 @@ pub struct UnfocusedMuteStatus {
     pub applications: Vec<UnfocusedMuteApplication>,
     pub auto_muted_keys: Vec<String>,
     pub foreground_key: Option<String>,
+    pub paused: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,6 +46,7 @@ struct RuntimeState {
     applications: BTreeMap<String, String>,
     auto_muted: HashMap<u32, RestoreEntry>,
     foreground_key: Option<String>,
+    paused: bool,
 }
 
 /// 后台轮询前台窗口并协调 WASAPI 会话静音状态。
@@ -74,6 +76,7 @@ impl UnfocusedMuteManager {
             applications,
             auto_muted,
             foreground_key: None,
+            paused: false,
         }));
         let shutdown = Arc::new(AtomicBool::new(false));
         let worker_state = Arc::clone(&state);
@@ -160,6 +163,16 @@ impl UnfocusedMuteManager {
         Ok(self.status())
     }
 
+    /// 暂停或恢复自动静音。暂停只影响当前运行周期，重启后默认恢复运行。
+    pub fn toggle_paused(&self) -> UnfocusedMuteStatus {
+        {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state.paused = !state.paused;
+        }
+        reconcile(&self.state, &self.app_data_dir, foreground_process_key());
+        self.status()
+    }
+
     /// 程序退出前恢复所有由本功能改变的静音状态。
     pub fn restore_all(&self) {
         self.shutdown.store(true, Ordering::Release);
@@ -227,6 +240,7 @@ fn reconcile(
         let current = sessions_by_pid.get(&pid);
         let still_same_application = current.is_some_and(|(_, key)| *key == entry.key);
         let should_remain_muted = still_same_application
+            && !runtime.paused
             && runtime.applications.contains_key(&entry.key)
             && foreground_key.as_deref() != Some(entry.key.as_str());
 
@@ -257,7 +271,8 @@ fn reconcile(
             continue;
         }
         let key = session_app_key(session);
-        let should_mute = runtime.applications.contains_key(&key)
+        let should_mute = !runtime.paused
+            && runtime.applications.contains_key(&key)
             && foreground_key.as_deref() != Some(key.as_str());
         if !should_mute || runtime.auto_muted.contains_key(&session.pid) {
             continue;
@@ -334,6 +349,7 @@ fn status_from_state(state: &RuntimeState) -> UnfocusedMuteStatus {
         applications,
         auto_muted_keys,
         foreground_key: state.foreground_key.clone(),
+        paused: state.paused,
     }
 }
 

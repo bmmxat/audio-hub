@@ -1,4 +1,4 @@
-//! 系统托盘：常驻图标、音量调节面板、静音、默认输出/麦克风切换与退出。
+//! 系统托盘：常驻图标、未聚焦静音快捷控制、默认输出/麦克风切换与退出。
 
 use std::sync::{
     Mutex,
@@ -6,23 +6,22 @@ use std::sync::{
 };
 
 use tauri::{
-    AppHandle, Manager, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Emitter, Manager,
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
 };
 
 use crate::audio::{
-    device::{DeviceDirection, DeviceVolumeState},
+    device::DeviceDirection,
+    notifications::{DEVICES_CHANGED_EVENT, SESSION_CHANGED_EVENT},
     process_loopback::ProcessCaptureManager,
     wasapi,
 };
-use crate::unfocused_mute::UnfocusedMuteManager;
+use crate::unfocused_mute::{UNFOCUSED_MUTE_CHANGED_EVENT, UnfocusedMuteManager};
 
 const TRAY_ICON_ID: &str = "audio-hub-tray";
 const TRAY_OPEN_ID: &str = "tray-open";
-const TRAY_VOLUME_STATUS_ID: &str = "tray-volume-status";
-const TRAY_VOLUME_OPEN_ID: &str = "tray-volume-open";
-const TRAY_MUTE_ID: &str = "tray-mute";
+const TRAY_UNFOCUSED_MUTE_ID: &str = "tray-unfocused-mute";
 const TRAY_DEVICE_MENU_ID: &str = "tray-devices";
 const TRAY_DEVICE_PREFIX: &str = "tray-device:";
 const TRAY_DEVICE_PLACEHOLDER_ID: &str = "tray-device:none";
@@ -30,8 +29,6 @@ const TRAY_INPUT_MENU_ID: &str = "tray-input-devices";
 const TRAY_INPUT_PREFIX: &str = "tray-input:";
 const TRAY_INPUT_PLACEHOLDER_ID: &str = "tray-input:none";
 const TRAY_QUIT_ID: &str = "tray-quit";
-
-const VOLUME_PANEL_LABEL: &str = "volume-panel";
 
 /// 保存托盘图标实例并记录可用状态，防止图标被提前释放。
 #[derive(Default)]
@@ -109,19 +106,22 @@ pub fn refresh(app: &AppHandle) {
 fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let open_item = MenuItem::with_id(app, TRAY_OPEN_ID, "打开 Audio Hub", true, None::<&str>)?;
 
-    let (volume_text, muted) = default_volume_state()
-        .map(|state| {
-            (
-                format!("主音量：{}%", (state.volume * 100.0).round() as u32),
-                state.muted,
-            )
-        })
-        .unwrap_or_else(|| ("主音量：未知".to_string(), false));
-    let volume_status =
-        MenuItem::with_id(app, TRAY_VOLUME_STATUS_ID, volume_text, false, None::<&str>)?;
-    let mute_text = if muted { "取消静音" } else { "静音" };
-    let mute_item = MenuItem::with_id(app, TRAY_MUTE_ID, mute_text, true, None::<&str>)?;
-    let volume_open = MenuItem::with_id(app, TRAY_VOLUME_OPEN_ID, "音量调节…", true, None::<&str>)?;
+    let unfocused_mute = app.state::<UnfocusedMuteManager>().status();
+    let unfocused_mute_count = unfocused_mute.applications.len();
+    let unfocused_mute_text = if unfocused_mute_count == 0 {
+        "未聚焦静音：未配置".to_string()
+    } else if unfocused_mute.paused {
+        format!("未聚焦静音：已暂停（{unfocused_mute_count} 个应用）")
+    } else {
+        format!("未聚焦静音：运行中（{unfocused_mute_count} 个应用）")
+    };
+    let unfocused_mute_item = MenuItem::with_id(
+        app,
+        TRAY_UNFOCUSED_MUTE_ID,
+        unfocused_mute_text,
+        unfocused_mute_count > 0,
+        None::<&str>,
+    )?;
 
     let output_menu = build_device_menu(
         app,
@@ -146,10 +146,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     menu.append_items(&[
         &open_item,
         &PredefinedMenuItem::separator(app)?,
-        &volume_status,
-        &mute_item,
-        &volume_open,
-        &PredefinedMenuItem::separator(app)?,
+        &unfocused_mute_item,
         &output_menu,
         &input_menu,
         &PredefinedMenuItem::separator(app)?,
@@ -205,8 +202,7 @@ fn build_device_menu(
 fn handle_menu_event(app: &AppHandle, id: &str) {
     match id {
         TRAY_OPEN_ID => show_main_window(app),
-        TRAY_MUTE_ID => toggle_default_mute(app),
-        TRAY_VOLUME_OPEN_ID => open_volume_panel(app),
+        TRAY_UNFOCUSED_MUTE_ID => toggle_unfocused_mute(app),
         TRAY_QUIT_ID => quit(app),
         _ if id.starts_with(TRAY_DEVICE_PREFIX) && id != TRAY_DEVICE_PLACEHOLDER_ID => {
             let device_id = id.trim_start_matches(TRAY_DEVICE_PREFIX);
@@ -228,46 +224,33 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
-fn default_volume_state() -> Option<DeviceVolumeState> {
-    let device_id = wasapi::get_default_device_id().ok()?;
-    wasapi::get_device_volume(&device_id).ok()
-}
-
-fn toggle_default_mute(app: &AppHandle) {
-    let device_id = wasapi::get_default_device_id().ok();
-    let muted = default_volume_state().map(|state| state.muted);
-    if let (Some(device_id), Some(muted)) = (device_id, muted)
-        && wasapi::set_device_mute(&device_id, !muted).is_ok()
-    {
-        refresh(app);
-    }
-}
-
-fn open_volume_panel(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window(VOLUME_PANEL_LABEL) {
-        let _ = window.show();
-        let _ = window.set_focus();
-        return;
-    }
-    let result = WebviewWindowBuilder::new(
-        app,
-        VOLUME_PANEL_LABEL,
-        WebviewUrl::App("volume.html".into()),
-    )
-    .title("Audio Hub 音量")
-    .inner_size(340.0, 148.0)
-    .resizable(false)
-    .center()
-    .build();
-    if let Err(error) = result {
-        eprintln!("无法打开音量面板：{error}");
-    }
+fn toggle_unfocused_mute(app: &AppHandle) {
+    app.state::<UnfocusedMuteManager>().toggle_paused();
+    let _ = app.emit(SESSION_CHANGED_EVENT, ());
+    let _ = app.emit(UNFOCUSED_MUTE_CHANGED_EVENT, ());
+    refresh_after_menu_event(app);
 }
 
 fn switch_default_device(app: &AppHandle, device_id: &str) {
-    if wasapi::set_default_device(device_id).is_ok() {
-        refresh(app);
-    }
+    let app = app.clone();
+    let device_id = device_id.to_string();
+    std::thread::spawn(move || match wasapi::set_default_device(&device_id) {
+        Ok(()) => {
+            let _ = app.emit(DEVICES_CHANGED_EVENT, ());
+        }
+        Err(error) => {
+            eprintln!("从托盘切换默认设备失败：{error:?}");
+        }
+    });
+}
+
+/// 等原生菜单事件返回后再替换菜单，避免当前菜单项在点击过程中失效。
+fn refresh_after_menu_event(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        refresh(&app);
+    });
 }
 
 fn quit(app: &AppHandle) {
