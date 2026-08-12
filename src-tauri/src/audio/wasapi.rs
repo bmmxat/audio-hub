@@ -265,6 +265,11 @@ fn enumerate_devices_impl(dataflow: EDataFlow) -> Result<Vec<AudioDevice>> {
 
 // ── 会话管理（Phase 4）───────────────────────────────────────
 
+struct SessionCandidate {
+    session: AudioSession,
+    is_active: bool,
+}
+
 /// 从 PID 获取进程的可执行文件名（例如 "League of Legends.exe"）。
 ///
 /// 使用 `CreateToolhelp32Snapshot` 遍历进程快照，无需打开进程句柄——
@@ -393,30 +398,48 @@ pub fn enumerate_sessions() -> Result<Vec<AudioSession>> {
                     })
                     .unwrap_or((1.0, false));
 
-                all_sessions.push(AudioSession {
-                    display_name,
-                    process_name,
-                    device_id: device_id.clone(),
-                    pid,
-                    volume,
-                    muted,
+                all_sessions.push(SessionCandidate {
+                    is_active: session_ctrl.GetState().ok() == Some(AudioSessionStateActive),
+                    session: AudioSession {
+                        display_name,
+                        process_name,
+                        device_id: device_id.clone(),
+                        pid,
+                        volume,
+                        muted,
+                    },
                 });
             }
         }
 
-        // 默认输出端点优先，使主界面展示和修改的都是当前扬声器会话；
-        // 其他端点上独有的会话仍会保留，供路由和插件功能使用。
+        // 优先保留正在发声的端点；状态相同时再优先默认输出端点。
+        // 这样既不会选中路由切换后残留的旧会话，也能稳定展示系统音效。
         deduplicate_sessions(&mut all_sessions, default_device_id.as_deref());
 
-        Ok(all_sessions)
+        Ok(all_sessions
+            .into_iter()
+            .map(|candidate| candidate.session)
+            .collect())
     })
 }
 
-fn deduplicate_sessions(sessions: &mut Vec<AudioSession>, default_device_id: Option<&str>) {
-    sessions.sort_by_key(|session| default_device_id != Some(session.device_id.as_str()));
+fn deduplicate_sessions(sessions: &mut Vec<SessionCandidate>, default_device_id: Option<&str>) {
+    // 路由切换后，旧端点上的非活动会话可能继续存在一段时间。
+    // 先选正在发声的会话，再在状态相同的候选中优先默认端点。
+    sessions.sort_by_key(|candidate| {
+        (
+            !candidate.is_active,
+            default_device_id != Some(candidate.session.device_id.as_str()),
+        )
+    });
     // 同一 (PID, 显示名称) 只保留一个；系统音效在每个端点各有一份。
     let mut seen = std::collections::HashSet::new();
-    sessions.retain(|session| seen.insert((session.pid, session.display_name.clone())));
+    sessions.retain(|candidate| {
+        seen.insert((
+            candidate.session.pid,
+            candidate.session.display_name.clone(),
+        ))
+    });
 }
 
 /// 仅枚举指定输出端点上的音频会话，用于按扬声器保存独立音量。
@@ -472,52 +495,62 @@ pub fn enumerate_sessions_for_device(device_id: &str) -> Result<Vec<AudioSession
     })
 }
 
+/// 读取指定端点上某 PID 会话是否仍在活动；`None` 表示该端点已不存在对应会话。
+pub fn session_active_on_device(device_id: &str, target_pid: u32) -> Result<Option<bool>> {
+    with_com(|| unsafe {
+        let enumerator = create_device_enumerator()?;
+        let device = get_device_by_id(&enumerator, device_id)?;
+        let session_manager: IAudioSessionManager2 = device.Activate(CLSCTX_ALL, None)?;
+        let session_enumerator = session_manager.GetSessionEnumerator()?;
+        let count = session_enumerator.GetCount()?;
+        let mut found = false;
+
+        for index in 0..count {
+            let Ok(session_ctrl) = session_enumerator.GetSession(index) else {
+                continue;
+            };
+            let pid = session_ctrl
+                .cast::<IAudioSessionControl2>()
+                .and_then(|control| control.GetProcessId())
+                .unwrap_or(0);
+            if pid != target_pid {
+                continue;
+            }
+            found = true;
+            if session_ctrl.GetState().ok() == Some(AudioSessionStateActive) {
+                return Ok(Some(true));
+            }
+        }
+
+        Ok(found.then_some(false))
+    })
+}
+
 // ── 音量控制（Phase 5）───────────────────────────────────
 
-/// 设置指定 PID 在所有输出设备上的音量。
+/// 设置指定 PID 当前实际会话端点上的音量。
 ///
-/// 遍历所有活跃会话，对匹配 PID 的会话调用 `ISimpleAudioVolume::SetMasterVolume`。
-/// 同一 PID 可能在多个设备上有会话——全部同步调整。
+/// 兼容未传设备 ID 的旧调用方。先按会话枚举的“活动端点优先”规则解析目标，
+/// 再只修改该端点，避免同一 PID 在多个设备有残留会话时跨设备误改。
 ///
 /// # 参数
 ///
 /// * `pid`  - 目标进程 ID
 /// * `volume` - 音量值（0.0 ~ 1.0）
 pub fn set_session_volume(pid: u32, volume: f32) -> Result<()> {
-    let volume = volume.clamp(0.0, 1.0);
-    let affected = with_com(|| unsafe {
-        for_each_session_by_pid(pid, |vol| {
-            vol.SetMasterVolume(volume, &super::notifications::AUDIO_HUB_EVENT_CONTEXT)
-                .map(|_| ())
-        })
-    })?;
-    if affected == 0 {
-        Err(session_not_found(pid))
-    } else {
-        Ok(())
-    }
+    let device_id = current_session_device_id(pid)?;
+    set_session_volume_for_device(&device_id, pid, volume)
 }
 
-/// 设置指定 PID 在所有输出设备上的静音状态。
-///
-/// 遍历所有活跃会话，对匹配 PID 的会话调用 `ISimpleAudioVolume::SetMute`。
+/// 设置指定 PID 当前实际会话端点上的静音状态。
 ///
 /// # 参数
 ///
 /// * `pid`   - 目标进程 ID
 /// * `muted` - true=静音，false=取消静音
 pub fn set_session_mute(pid: u32, muted: bool) -> Result<()> {
-    let affected = with_com(|| unsafe {
-        for_each_session_by_pid(pid, |vol| {
-            vol.SetMute(muted, &super::notifications::AUDIO_HUB_EVENT_CONTEXT)
-                .map(|_| ())
-        })
-    })?;
-    if affected == 0 {
-        Err(session_not_found(pid))
-    } else {
-        Ok(())
-    }
+    let device_id = current_session_device_id(pid)?;
+    set_session_mute_for_device(&device_id, pid, muted)
 }
 
 /// 仅设置指定输出端点上匹配 PID 的会话音量。
@@ -560,57 +593,15 @@ fn session_not_found(pid: u32) -> Error {
     )
 }
 
-/// 遍历所有输出设备上的会话，对匹配 PID 的会话执行回调。
-unsafe fn for_each_session_by_pid(
-    target_pid: u32,
-    mut f: impl FnMut(&ISimpleAudioVolume) -> Result<()>,
-) -> Result<usize> {
-    let enumerator = create_device_enumerator()?;
-    let devices = unsafe { enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) }?;
-    let device_count = unsafe { devices.GetCount() }?;
-    let mut affected = 0;
+fn current_session_device_id(pid: u32) -> Result<String> {
+    session_device_id_by_pid(&enumerate_sessions()?, pid).ok_or_else(|| session_not_found(pid))
+}
 
-    for di in 0..device_count {
-        let Ok(device) = (unsafe { devices.Item(di) }) else {
-            continue;
-        };
-
-        let Ok(session_manager) =
-            (unsafe { device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) })
-        else {
-            continue;
-        };
-
-        let Ok(session_enumerator) = (unsafe { session_manager.GetSessionEnumerator() }) else {
-            continue;
-        };
-
-        let Ok(count) = (unsafe { session_enumerator.GetCount() }) else {
-            continue;
-        };
-
-        for si in 0..count {
-            let Ok(session_ctrl) = (unsafe { session_enumerator.GetSession(si) }) else {
-                continue;
-            };
-
-            let pid = session_ctrl
-                .cast::<IAudioSessionControl2>()
-                .and_then(|ctrl2| unsafe { ctrl2.GetProcessId() })
-                .unwrap_or(0);
-
-            if pid != target_pid {
-                continue;
-            }
-
-            if let Ok(vol) = session_ctrl.cast::<ISimpleAudioVolume>() {
-                f(&vol)?;
-                affected += 1;
-            }
-        }
-    }
-
-    Ok(affected)
+fn session_device_id_by_pid(sessions: &[AudioSession], pid: u32) -> Option<String> {
+    sessions
+        .iter()
+        .find(|session| session.pid == pid && !session.device_id.is_empty())
+        .map(|session| session.device_id.clone())
 }
 
 unsafe fn for_each_session_by_pid_on_device(
@@ -711,36 +702,32 @@ pub fn open_sound_settings() {
 ///（处理应用重启后 PID 变化的情况）。
 pub fn apply_profile(profile: &super::profile::Profile) -> Result<()> {
     let sessions = enumerate_sessions()?;
-    let active_pids: std::collections::HashSet<u32> =
-        sessions.iter().map(|session| session.pid).collect();
 
     for entry in &profile.entries {
-        let target_pid = if active_pids.contains(&entry.pid) {
-            Some(entry.pid)
-        } else {
-            sessions
-                .iter()
-                .find(|session| {
+        let target = sessions
+            .iter()
+            .find(|session| session.pid == entry.pid)
+            .or_else(|| {
+                sessions.iter().find(|session| {
                     session
                         .display_name
                         .eq_ignore_ascii_case(&entry.display_name)
                 })
-                .map(|session| session.pid)
-        };
+            });
 
-        if let Some(pid) = target_pid {
-            apply_to_pid(pid, entry.volume, entry.muted)?;
+        if let Some(session) = target {
+            apply_to_session(session, entry.volume, entry.muted)?;
         }
     }
 
     Ok(())
 }
 
-/// 设置指定 PID 的音量和静音。
-fn apply_to_pid(pid: u32, volume: f32, muted: bool) -> Result<()> {
+/// 设置指定会话所属端点的音量和静音。
+fn apply_to_session(session: &AudioSession, volume: f32, muted: bool) -> Result<()> {
     // 先设静音，再设音量（静音状态独立于音量值）
-    set_session_mute(pid, muted)?;
-    set_session_volume(pid, volume)
+    set_session_mute_for_device(&session.device_id, session.pid, muted)?;
+    set_session_volume_for_device(&session.device_id, session.pid, volume)
 }
 
 #[cfg(test)]
@@ -750,26 +737,81 @@ mod tests {
     #[test]
     fn duplicate_sessions_prefer_the_current_default_output() {
         let mut sessions = vec![
-            AudioSession {
-                display_name: "Player".to_string(),
-                process_name: Some("player.exe".to_string()),
-                device_id: "other".to_string(),
-                pid: 9,
-                volume: 0.2,
-                muted: false,
+            SessionCandidate {
+                is_active: false,
+                session: AudioSession {
+                    display_name: "Player".to_string(),
+                    process_name: Some("player.exe".to_string()),
+                    device_id: "other".to_string(),
+                    pid: 9,
+                    volume: 0.2,
+                    muted: false,
+                },
             },
-            AudioSession {
-                display_name: "Player".to_string(),
-                process_name: Some("player.exe".to_string()),
-                device_id: "default".to_string(),
-                pid: 9,
-                volume: 0.8,
-                muted: false,
+            SessionCandidate {
+                is_active: false,
+                session: AudioSession {
+                    display_name: "Player".to_string(),
+                    process_name: Some("player.exe".to_string()),
+                    device_id: "default".to_string(),
+                    pid: 9,
+                    volume: 0.8,
+                    muted: false,
+                },
             },
         ];
         deduplicate_sessions(&mut sessions, Some("default"));
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].device_id, "default");
-        assert_eq!(sessions[0].volume, 0.8);
+        assert_eq!(sessions[0].session.device_id, "default");
+        assert_eq!(sessions[0].session.volume, 0.8);
+    }
+
+    #[test]
+    fn duplicate_sessions_prefer_active_routed_output_over_inactive_default() {
+        let mut sessions = vec![
+            SessionCandidate {
+                is_active: false,
+                session: AudioSession {
+                    display_name: "Player".to_string(),
+                    process_name: Some("player.exe".to_string()),
+                    device_id: "default".to_string(),
+                    pid: 9,
+                    volume: 0.8,
+                    muted: false,
+                },
+            },
+            SessionCandidate {
+                is_active: true,
+                session: AudioSession {
+                    display_name: "Player".to_string(),
+                    process_name: Some("player.exe".to_string()),
+                    device_id: "routed".to_string(),
+                    pid: 9,
+                    volume: 0.2,
+                    muted: false,
+                },
+            },
+        ];
+        deduplicate_sessions(&mut sessions, Some("default"));
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session.device_id, "routed");
+        assert_eq!(sessions[0].session.volume, 0.2);
+    }
+
+    #[test]
+    fn legacy_pid_only_control_resolves_the_selected_session_device() {
+        let sessions = vec![AudioSession {
+            display_name: "Player".to_string(),
+            process_name: Some("player.exe".to_string()),
+            device_id: "routed".to_string(),
+            pid: 9,
+            volume: 0.2,
+            muted: false,
+        }];
+        assert_eq!(
+            session_device_id_by_pid(&sessions, 9).as_deref(),
+            Some("routed")
+        );
+        assert_eq!(session_device_id_by_pid(&sessions, 10), None);
     }
 }

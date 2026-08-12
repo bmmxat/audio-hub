@@ -443,6 +443,9 @@ function renderSessionItem(session, isHidden) {
                 </button>`
         : '';
     const currentDev = state.sessionDevices[stableKey] || '';
+    // 应用被显式路由后，枚举结果里可能仍暂时保留默认端点上的旧会话。
+    // 音量和静音操作必须优先发往路由目标，而不是旧会话所属端点。
+    const controlDeviceId = currentDev || session.device_id || '';
     const currentDevName = currentDev
         ? state.outputDevices.find((d) => d.device_id === currentDev)?.name || '设备已断开'
         : '默认';
@@ -484,11 +487,11 @@ function renderSessionItem(session, isHidden) {
                         value="${volPct}"
                         style="--fill: ${volPct}%"
                         data-pid="${session.pid}"
-                        data-session-device-id="${escAttr(session.device_id || '')}">
+                        data-session-device-id="${escAttr(controlDeviceId)}">
             </div>
             <span class="volume-pct" data-pid="${session.pid}">${volPct}%</span>
             <button class="${muteCls}" data-pid="${session.pid}"
-                    data-session-device-id="${escAttr(session.device_id || '')}">${muteSvg}</button>
+                    data-session-device-id="${escAttr(controlDeviceId)}">${muteSvg}</button>
             ${session.pid === 0
         ? '<span class="route-label-fixed">系统默认</span>'
         : simpleRouteActive
@@ -4067,29 +4070,18 @@ function setupEventListeners() {
                     delete state.sessionDevices[stableKey];
                 }
                 saveSessionDevices();
-                // 更新触发按钮文字和锁图标
-                const wrapper = opt.closest('.route-wrapper');
-                if (wrapper) {
-                    const label = wrapper.querySelector('.route-label');
-                    const trigger = wrapper.querySelector('.route-trigger');
-                    if (label) label.textContent = opt.textContent.trim();
-                    if (trigger) {
-                        if (deviceId) {
-                            trigger.classList.add('locked');
-                            trigger.innerHTML = trigger.innerHTML.replace(
-                                /<svg.*?<\/svg>/,
-                                '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/><circle cx="12" cy="16" r="1"/></svg>',
-                            );
-                        } else {
-                            trigger.classList.remove('locked');
-                            trigger.innerHTML = trigger.innerHTML.replace(
-                                /<svg.*?<\/svg>/,
-                                '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>',
-                            );
-                        }
-                    }
-                    wrapper.querySelector('.route-dropdown')?.classList.add('hidden');
+                const session = state.sessions.find(
+                    (item) => item.pid === pid && sessionKey(item) === stableKey,
+                );
+                if (session) {
+                    session.device_id = deviceId
+                        || state.defaultOutput?.device_id
+                        || session.device_id;
                 }
+                // 重新渲染，让滑块和静音按钮立即携带新的目标端点。
+                renderSessionList();
+                scheduleAudioRefresh({ sessions: true, devices: false });
+                setStatus(deviceId ? '应用输出设备已更新' : '应用已恢复系统默认输出');
             })
             .catch((err) => setStatus(`路由失败: ${err}`));
     });
@@ -4134,7 +4126,7 @@ function setupEventListeners() {
         const pid = parseInt(btn.dataset.pid, 10);
         const deviceId = btn.dataset.sessionDeviceId || null;
         const newMuted = !btn.classList.contains('muted');
-        updateLocalMute(pid, newMuted);
+        updateLocalMute(pid, newMuted, deviceId);
         scheduleCurrentDeviceVolumeSnapshot(deviceId);
 
         AudioAPI.setSessionMute(pid, newMuted, deviceId).catch(() => {
@@ -4181,7 +4173,10 @@ function setupEventListeners() {
 
 // ── 本地状态即时更新 ─────────────────────────────────
 function updateLocalVolume(pid, volume, deviceId) {
-    const session = state.sessions.find((s) => s.pid === pid);
+    const session = state.sessions.find(
+        (item) => item.pid === pid
+            && (!deviceId || sessionControlDeviceId(item) === deviceId),
+    ) || state.sessions.find((item) => item.pid === pid);
     if (session) {
         session.volume = volume;
         if (session.muted && volume > 0) {
@@ -4210,8 +4205,11 @@ function updateLocalVolume(pid, volume, deviceId) {
     });
 }
 
-function updateLocalMute(pid, muted) {
-    const session = state.sessions.find((s) => s.pid === pid);
+function updateLocalMute(pid, muted, deviceId) {
+    const session = state.sessions.find(
+        (item) => item.pid === pid
+            && (!deviceId || sessionControlDeviceId(item) === deviceId),
+    ) || state.sessions.find((item) => item.pid === pid);
     if (session) session.muted = muted;
     dom.sessionList.querySelectorAll(`[data-pid="${pid}"]`).forEach((el) => {
         if (el.classList.contains('mute-btn')) {
@@ -4224,6 +4222,10 @@ function updateLocalMute(pid, muted) {
             }
         }
     });
+}
+
+function sessionControlDeviceId(session) {
+    return state.sessionDevices[sessionKey(session)] || session.device_id || '';
 }
 
 // ── 状态栏 ───────────────────────────────────────────

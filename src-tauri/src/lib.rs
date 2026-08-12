@@ -84,12 +84,8 @@ fn configure_device_volume_follow(
     manager: tauri::State<'_, DeviceVolumeFollowManager>,
     unfocused_mute: tauri::State<'_, UnfocusedMuteManager>,
 ) -> Result<DeviceVolumeFollowStatus, String> {
-    let auto_muted_keys = unfocused_mute
-        .status()
-        .auto_muted_keys
-        .into_iter()
-        .collect();
-    manager.configure(enabled, legacy_snapshots, &auto_muted_keys)
+    let auto_muted_baselines = unfocused_mute.auto_muted_baselines();
+    manager.configure(enabled, legacy_snapshots, &auto_muted_baselines)
 }
 
 #[tauri::command]
@@ -98,12 +94,8 @@ fn capture_device_volume_snapshot(
     manager: tauri::State<'_, DeviceVolumeFollowManager>,
     unfocused_mute: tauri::State<'_, UnfocusedMuteManager>,
 ) -> Result<(), String> {
-    let auto_muted_keys = unfocused_mute
-        .status()
-        .auto_muted_keys
-        .into_iter()
-        .collect();
-    manager.capture_device(device_id.as_deref(), &auto_muted_keys)
+    let auto_muted_baselines = unfocused_mute.auto_muted_baselines();
+    manager.capture_device(device_id.as_deref(), &auto_muted_baselines)
 }
 
 /// 获取指定输出或输入设备的 Windows 主音量。
@@ -144,8 +136,18 @@ fn set_default_device(device_id: String) -> Result<(), String> {
 
 /// 设置应用输出设备（per-app 路由）。
 #[tauri::command]
-fn set_app_output_device(pid: u32, device_id: String) -> Result<(), String> {
-    wasapi::set_app_output_device(pid, &device_id).map_err(|e| format!("{:?}", e))
+fn set_app_output_device(
+    pid: u32,
+    device_id: String,
+    app: tauri::AppHandle,
+    unfocused_mute: tauri::State<'_, UnfocusedMuteManager>,
+) -> Result<(), String> {
+    wasapi::set_app_output_device(pid, &device_id).map_err(|e| format!("{:?}", e))?;
+    if unfocused_mute.reconcile_now() {
+        let _ = app.emit(SESSION_CHANGED_EVENT, ());
+        let _ = app.emit(UNFOCUSED_MUTE_CHANGED_EVENT, ());
+    }
+    Ok(())
 }
 
 /// 打开 Windows 声音设置面板（降级方案）。

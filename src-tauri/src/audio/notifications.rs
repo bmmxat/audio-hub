@@ -25,7 +25,7 @@ use windows::{
     core::{BOOL, GUID, PCWSTR, Ref, implement},
 };
 
-use crate::unfocused_mute::UnfocusedMuteManager;
+use crate::unfocused_mute::{UNFOCUSED_MUTE_CHANGED_EVENT, UnfocusedMuteManager};
 
 use super::device_volume_follow::{DEVICE_VOLUME_FOLLOW_EVENT, DeviceVolumeFollowManager};
 
@@ -445,12 +445,14 @@ fn watcher_thread(
         } else {
             if topology_changed {
                 registrations.rebuild_session_events();
+                let auto_muted_baselines = auto_muted_baselines(&app);
                 if let Err(error) = app
                     .state::<DeviceVolumeFollowManager>()
-                    .apply_current_snapshot()
+                    .apply_current_snapshot(&auto_muted_baselines)
                 {
                     eprintln!("新音频会话恢复扬声器快照失败：{error}");
                 }
+                reconcile_unfocused_mute(&app);
             }
             if topology_changed || session_changed {
                 capture_device_volume_snapshot(&app);
@@ -486,32 +488,38 @@ fn fallback_watcher_loop(
     }
 }
 
-fn auto_muted_keys(app: &AppHandle) -> std::collections::HashSet<String> {
-    app.state::<UnfocusedMuteManager>()
-        .status()
-        .auto_muted_keys
-        .into_iter()
-        .collect()
+fn auto_muted_baselines(app: &AppHandle) -> std::collections::HashMap<String, bool> {
+    app.state::<UnfocusedMuteManager>().auto_muted_baselines()
 }
 
 fn capture_device_volume_snapshot(app: &AppHandle) {
+    let auto_muted_baselines = auto_muted_baselines(app);
     if let Err(error) = app
         .state::<DeviceVolumeFollowManager>()
-        .capture_current(&auto_muted_keys(app))
+        .capture_current(&auto_muted_baselines)
     {
         eprintln!("保存默认扬声器应用音量失败：{error}");
     }
 }
 
 fn apply_device_volume_follow(app: &AppHandle) {
+    let auto_muted_baselines = auto_muted_baselines(app);
     match app
         .state::<DeviceVolumeFollowManager>()
-        .handle_default_output_change(&auto_muted_keys(app))
+        .handle_default_output_change(&auto_muted_baselines)
     {
         Ok(Some(result)) => {
             let _ = app.emit(DEVICE_VOLUME_FOLLOW_EVENT, result);
         }
         Ok(None) => {}
         Err(error) => eprintln!("默认扬声器变化后恢复应用音量失败：{error}"),
+    }
+    reconcile_unfocused_mute(app);
+}
+
+fn reconcile_unfocused_mute(app: &AppHandle) {
+    if app.state::<UnfocusedMuteManager>().reconcile_now() {
+        let _ = app.emit(SESSION_CHANGED_EVENT, ());
+        let _ = app.emit(UNFOCUSED_MUTE_CHANGED_EVENT, ());
     }
 }

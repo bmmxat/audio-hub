@@ -92,7 +92,7 @@ impl DeviceVolumeFollowManager {
         &self,
         enabled: bool,
         legacy_snapshots: Option<HashMap<String, DeviceVolumeSnapshot>>,
-        auto_muted_keys: &HashSet<String>,
+        auto_muted_baselines: &HashMap<String, bool>,
     ) -> Result<DeviceVolumeFollowStatus, String> {
         let default_device = default_output_device()?;
         let sessions = if enabled {
@@ -118,21 +118,24 @@ impl DeviceVolumeFollowManager {
         if let Some(sessions) = sessions {
             state.snapshots.insert(
                 default_device.device_id,
-                build_snapshot(&default_device.name, &sessions, auto_muted_keys),
+                build_snapshot(&default_device.name, &sessions, auto_muted_baselines),
             );
         }
         self.save(&state)?;
         Ok(status_from_state(&state))
     }
 
-    pub fn capture_current(&self, auto_muted_keys: &HashSet<String>) -> Result<(), String> {
-        self.capture_device(None, auto_muted_keys)
+    pub fn capture_current(
+        &self,
+        auto_muted_baselines: &HashMap<String, bool>,
+    ) -> Result<(), String> {
+        self.capture_device(None, auto_muted_baselines)
     }
 
     pub fn capture_device(
         &self,
         requested_device_id: Option<&str>,
-        auto_muted_keys: &HashSet<String>,
+        auto_muted_baselines: &HashMap<String, bool>,
     ) -> Result<(), String> {
         let state = self
             .state
@@ -176,15 +179,18 @@ impl DeviceVolumeFollowManager {
             state
                 .snapshots
                 .entry(device_id)
-                .or_insert_with(|| build_snapshot(&device_name, &[], auto_muted_keys)),
+                .or_insert_with(|| build_snapshot(&device_name, &[], auto_muted_baselines)),
             &device_name,
             &sessions,
-            auto_muted_keys,
+            auto_muted_baselines,
         );
         self.save(&state)
     }
 
-    pub fn apply_current_snapshot(&self) -> Result<usize, String> {
+    pub fn apply_current_snapshot(
+        &self,
+        auto_muted_baselines: &HashMap<String, bool>,
+    ) -> Result<usize, String> {
         let state = self
             .state
             .lock()
@@ -200,12 +206,17 @@ impl DeviceVolumeFollowManager {
         };
         let sessions = wasapi::enumerate_sessions_for_device(device_id)
             .map_err(|error| format!("无法读取当前扬声器会话：{error:?}"))?;
-        Ok(apply_snapshot(device_id, &sessions, snapshot))
+        Ok(apply_snapshot(
+            device_id,
+            &sessions,
+            snapshot,
+            auto_muted_baselines,
+        ))
     }
 
     pub fn handle_default_output_change(
         &self,
-        auto_muted_keys: &HashSet<String>,
+        auto_muted_baselines: &HashMap<String, bool>,
     ) -> Result<Option<DeviceVolumeFollowEvent>, String> {
         let default_device = default_output_device()?;
         let sessions = wasapi::enumerate_sessions_for_device(&default_device.device_id)
@@ -228,11 +239,16 @@ impl DeviceVolumeFollowManager {
         state.current_device_name = Some(default_device.name.clone());
         let snapshot = state.snapshots.get(&default_device.device_id).cloned();
         let applied = if let Some(snapshot) = snapshot.as_ref() {
-            apply_snapshot(&default_device.device_id, &sessions, snapshot)
+            apply_snapshot(
+                &default_device.device_id,
+                &sessions,
+                snapshot,
+                auto_muted_baselines,
+            )
         } else {
             state.snapshots.insert(
                 default_device.device_id.clone(),
-                build_snapshot(&default_device.name, &sessions, auto_muted_keys),
+                build_snapshot(&default_device.name, &sessions, auto_muted_baselines),
             );
             0
         };
@@ -266,7 +282,7 @@ fn default_output_device() -> Result<AudioDevice, String> {
 fn build_snapshot(
     device_name: &str,
     sessions: &[AudioSession],
-    auto_muted_keys: &HashSet<String>,
+    auto_muted_baselines: &HashMap<String, bool>,
 ) -> DeviceVolumeSnapshot {
     let sessions = sessions
         .iter()
@@ -277,7 +293,10 @@ fn build_snapshot(
                 SessionVolumeSnapshot {
                     display_name: session.display_name.clone(),
                     volume: session.volume.clamp(0.0, 1.0),
-                    muted: session.muted && !auto_muted_keys.contains(&key),
+                    muted: auto_muted_baselines
+                        .get(&key)
+                        .copied()
+                        .unwrap_or(session.muted),
                 },
             )
         })
@@ -296,9 +315,9 @@ fn merge_snapshot(
     snapshot: &mut DeviceVolumeSnapshot,
     device_name: &str,
     sessions: &[AudioSession],
-    auto_muted_keys: &HashSet<String>,
+    auto_muted_baselines: &HashMap<String, bool>,
 ) {
-    let next = build_snapshot(device_name, sessions, auto_muted_keys);
+    let next = build_snapshot(device_name, sessions, auto_muted_baselines);
     snapshot.device_name = next.device_name;
     snapshot.updated_at = next.updated_at;
     snapshot.sessions.extend(next.sessions);
@@ -308,19 +327,29 @@ fn apply_snapshot(
     device_id: &str,
     sessions: &[AudioSession],
     snapshot: &DeviceVolumeSnapshot,
+    auto_muted_baselines: &HashMap<String, bool>,
 ) -> usize {
     let mut applied_pids = HashSet::new();
     sessions
         .iter()
         .filter(|session| applied_pids.insert(session.pid))
         .filter(|session| {
-            let Some(saved) = snapshot.sessions.get(&session_key(session)) else {
+            let key = session_key(session);
+            let Some(saved) = snapshot.sessions.get(&key) else {
                 return false;
             };
-            wasapi::set_session_volume_for_device(device_id, session.pid, saved.volume).is_ok()
-                && wasapi::set_session_mute_for_device(device_id, session.pid, saved.muted).is_ok()
+            if wasapi::set_session_volume_for_device(device_id, session.pid, saved.volume).is_err()
+            {
+                return false;
+            }
+            !should_apply_saved_mute(&key, auto_muted_baselines)
+                || wasapi::set_session_mute_for_device(device_id, session.pid, saved.muted).is_ok()
         })
         .count()
+}
+
+fn should_apply_saved_mute(key: &str, auto_muted_baselines: &HashMap<String, bool>) -> bool {
+    !auto_muted_baselines.contains_key(key)
 }
 
 fn session_key(session: &AudioSession) -> String {
@@ -354,11 +383,35 @@ mod tests {
             volume: 0.65,
             muted: true,
         }];
-        let auto_muted = HashSet::from(["discord".to_string()]);
+        let auto_muted = HashMap::from([("discord".to_string(), false)]);
         let snapshot = build_snapshot("Speakers", &sessions, &auto_muted);
         let saved = snapshot.sessions.get("discord").unwrap();
         assert_eq!(saved.volume, 0.65);
         assert!(!saved.muted);
+    }
+
+    #[test]
+    fn snapshot_preserves_manual_mute_before_temporary_mute() {
+        let sessions = vec![AudioSession {
+            display_name: "Discord Voice".to_string(),
+            process_name: Some("Discord.exe".to_string()),
+            device_id: "device-a".to_string(),
+            pid: 42,
+            volume: 0.65,
+            muted: true,
+        }];
+        let auto_muted = HashMap::from([("discord".to_string(), true)]);
+        let snapshot = build_snapshot("Speakers", &sessions, &auto_muted);
+
+        assert!(snapshot.sessions.get("discord").unwrap().muted);
+    }
+
+    #[test]
+    fn snapshot_restore_skips_mute_for_temporarily_muted_application() {
+        let auto_muted = HashMap::from([("discord".to_string(), false)]);
+
+        assert!(!should_apply_saved_mute("discord", &auto_muted));
+        assert!(should_apply_saved_mute("music", &auto_muted));
     }
 
     #[test]
@@ -383,7 +436,7 @@ mod tests {
             volume: 0.8,
             muted: false,
         }];
-        merge_snapshot(&mut snapshot, "New Name", &sessions, &HashSet::new());
+        merge_snapshot(&mut snapshot, "New Name", &sessions, &HashMap::new());
         assert!(snapshot.sessions.contains_key("game"));
         assert_eq!(snapshot.sessions.get("music").unwrap().volume, 0.8);
         assert_eq!(snapshot.device_name, "New Name");
