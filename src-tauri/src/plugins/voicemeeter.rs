@@ -321,6 +321,34 @@ impl VoicemeeterManager {
         })
     }
 
+    pub fn restore(
+        &self,
+        configuration: VoicemeeterConfiguration,
+    ) -> Result<VoicemeeterStatus, String> {
+        let clear_monitor = configuration.monitor_device_name.is_none();
+        let clear_physical_input = configuration.physical_input.device_name.is_none();
+        let status = self.apply(configuration)?;
+        if !clear_monitor && !clear_physical_input {
+            return Ok(status);
+        }
+
+        let install_dir = require_install_directory()?;
+        self.with_session(&install_dir, |session| {
+            let layout = session.layout()?;
+            if clear_monitor {
+                session.api.set_string("Bus[0].Device.wdm", "")?;
+            }
+            if clear_physical_input {
+                session.api.set_string(
+                    &format!("Strip[{}].Device.wdm", layout.physical_input_strip),
+                    "",
+                )?;
+            }
+            thread::sleep(Duration::from_millis(120));
+            session.status_result()
+        })
+    }
+
     fn with_session<T>(
         &self,
         install_dir: &Path,

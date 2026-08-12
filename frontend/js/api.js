@@ -26,19 +26,41 @@ window.AudioAPI = {
     },
 
     /** 设置指定 PID 应用的音量（0.0 ~ 1.0） */
-    async setSessionVolume(pid, volume) {
+    async setSessionVolume(pid, volume, deviceId = null) {
         return await window.__TAURI__.core.invoke('set_session_volume', {
             pid: pid,
             volume: volume,
+            deviceId: deviceId,
         });
     },
 
     /** 设置指定 PID 应用的静音状态 */
-    async setSessionMute(pid, muted) {
+    async setSessionMute(pid, muted, deviceId = null) {
         return await window.__TAURI__.core.invoke('set_session_mute', {
             pid: pid,
             muted: muted,
+            deviceId: deviceId,
         });
+    },
+
+    async getDeviceVolumeFollowStatus() {
+        return await window.__TAURI__.core.invoke(
+            'get_device_volume_follow_status',
+        );
+    },
+
+    async configureDeviceVolumeFollow(enabled, legacySnapshots = null) {
+        return await window.__TAURI__.core.invoke(
+            'configure_device_volume_follow',
+            { enabled: enabled, legacySnapshots: legacySnapshots },
+        );
+    },
+
+    async captureDeviceVolumeSnapshot(deviceId = null) {
+        return await window.__TAURI__.core.invoke(
+            'capture_device_volume_snapshot',
+            { deviceId: deviceId },
+        );
     },
 
     /** 获取未聚焦自动静音应用及运行状态 */
@@ -281,6 +303,10 @@ window.AudioAPI = {
 
     async simpleRouteStatus() {
         return await window.__TAURI__.core.invoke('simple_route_status');
+    },
+
+    async prepareSimpleRoute() {
+        return await window.__TAURI__.core.invoke('prepare_simple_route');
     },
 
     async enableSimpleRouteApplication(pid, key, displayName) {

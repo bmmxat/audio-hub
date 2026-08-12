@@ -1,6 +1,6 @@
 [package]
 name = "audio-hub"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 description = "A lightweight Windows audio control center"
 license = "MIT"
@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 windows = { version = "0.62", features = [

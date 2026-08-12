@@ -96,6 +96,26 @@ impl SimpleRouteManager {
         }
     }
 
+    pub fn prepare(&self, voicemeeter: &VoicemeeterManager) -> Result<SimpleRouteStatus, String> {
+        let mut guard = self
+            .session
+            .lock()
+            .map_err(|_| "简易流转状态已损坏。".to_string())?;
+        if guard.is_some() {
+            return self.status_with_guard(&guard);
+        }
+
+        let session = create_prepared_session(voicemeeter)?;
+        if let Err(error) = self.save_session(&session) {
+            let _ = restore_default_input(&session);
+            let _ = voicemeeter.restore(session.original_voicemeeter_configuration.clone());
+            return Err(error);
+        }
+        *guard = Some(session);
+        self.recovery_pending.store(false, Ordering::Relaxed);
+        self.status_with_guard(&guard)
+    }
+
     pub fn enable_application(
         &self,
         pid: u32,
@@ -108,122 +128,43 @@ impl SimpleRouteManager {
             .session
             .lock()
             .map_err(|_| "简易流转状态已损坏。".to_string())?;
-        if let Some(session) = guard.as_mut() {
-            if session
-                .applications
-                .iter()
-                .any(|application| application.key == key)
-            {
-                return Ok(status_from_session(
-                    session,
-                    self.recovery_pending.load(Ordering::Relaxed),
-                ));
-            }
-            let original_output_device_id = wasapi::get_app_output_device(pid)
-                .map_err(|error| format!("无法读取应用原输出设备：{error:?}"))?;
-            wasapi::set_app_output_device(pid, &session.voicemeeter_input_id)
-                .map_err(|error| format!("无法将应用加入简易流转：{error:?}"))?;
-            session.applications.push(SimpleRouteApplication {
-                key,
-                display_name,
-                pid,
-                original_output_device_id: original_output_device_id.clone(),
-            });
-            if let Err(error) = self.save_session(session) {
-                let restore_id = original_output_device_id.as_deref().unwrap_or_default();
-                let _ = wasapi::set_app_output_device(pid, restore_id);
-                session.applications.pop();
-                return Err(error);
-            }
-            self.recovery_pending.store(false, Ordering::Relaxed);
-            return Ok(status_from_session(session, false));
+        if guard.is_none() {
+            drop(guard);
+            self.prepare(voicemeeter)?;
+            guard = self
+                .session
+                .lock()
+                .map_err(|_| "简易流转状态已损坏。".to_string())?;
         }
-
-        let vm_status = voicemeeter.status();
-        if !vm_status.connected {
-            return Err("VoiceMeeter 尚未运行或 Remote API 未连接。".to_string());
-        }
-        let original_configuration = vm_status
-            .configuration
-            .ok_or_else(|| "无法读取 VoiceMeeter 当前配置。".to_string())?;
-        let output_devices = wasapi::enumerate_devices(DeviceDirection::Output)
-            .map_err(|error| format!("无法读取输出设备：{error:?}"))?;
-        let input_devices = wasapi::enumerate_devices(DeviceDirection::Input)
-            .map_err(|error| format!("无法读取输入设备：{error:?}"))?;
-        let voicemeeter_input = find_main_voicemeeter_input(&output_devices)
-            .ok_or_else(|| "未检测到 VoiceMeeter Input 播放设备。".to_string())?;
-        let virtual_microphone = find_b1_virtual_microphone(&input_devices)
-            .ok_or_else(|| "未检测到 VoiceMeeter B1 虚拟麦克风。".to_string())?;
-        let original_default_input = input_devices
+        let session = guard
+            .as_mut()
+            .ok_or_else(|| "简易流转尚未准备完成。".to_string())?;
+        if session
+            .applications
             .iter()
-            .find(|device| device.is_default)
-            .ok_or_else(|| "未检测到 Windows 默认麦克风。".to_string())?;
-        let physical_microphone = find_physical_microphone(
-            &input_devices,
-            original_configuration.physical_input.device_name.as_deref(),
-        )
-        .ok_or_else(|| "未检测到可用的物理麦克风。".to_string())?;
-        let monitor = find_default_physical_output(&output_devices).ok_or_else(|| {
-            "未检测到 Windows 默认物理扬声器。请先在 Audio Hub 或 Windows 中将实际扬声器/耳机设为默认输出。"
-                .to_string()
-        })?;
+            .any(|application| application.key == key)
+        {
+            return Ok(status_from_session(
+                session,
+                self.recovery_pending.load(Ordering::Relaxed),
+            ));
+        }
         let original_output_device_id = wasapi::get_app_output_device(pid)
             .map_err(|error| format!("无法读取应用原输出设备：{error:?}"))?;
-
-        let mut requested = original_configuration.clone();
-        requested.monitor_device_name = Some(monitor.name.clone());
-        requested.main_mix.monitor_enabled = true;
-        requested.main_mix.virtual_microphone_enabled = true;
-        requested.main_mix.input_muted = false;
-        requested.main_mix.virtual_microphone_muted = false;
-        requested.physical_input.device_name = Some(physical_microphone.name.clone());
-        requested.physical_input.muted = false;
-        requested.physical_input.monitor_enabled = false;
-        requested.physical_input.main_mix_enabled = true;
-
-        voicemeeter
-            .apply(requested)
-            .map_err(|error| format!("无法建立 VoiceMeeter 简易混音：{error}"))?;
-        if let Err(error) = wasapi::set_app_output_device(pid, &voicemeeter_input.device_id) {
-            let _ = voicemeeter.apply(original_configuration.clone());
-            return Err(format!("无法路由应用声音：{error:?}"));
-        }
-        if let Err(error) = wasapi::set_default_device(&virtual_microphone.device_id) {
+        wasapi::set_app_output_device(pid, &session.voicemeeter_input_id)
+            .map_err(|error| format!("无法将应用加入简易流转：{error:?}"))?;
+        session.applications.push(SimpleRouteApplication {
+            key,
+            display_name,
+            pid,
+            original_output_device_id: original_output_device_id.clone(),
+        });
+        if let Err(error) = self.save_session(session) {
             let restore_id = original_output_device_id.as_deref().unwrap_or_default();
             let _ = wasapi::set_app_output_device(pid, restore_id);
-            let _ = voicemeeter.apply(original_configuration.clone());
-            return Err(format!("无法将虚拟麦克风设为默认设备：{error:?}"));
-        }
-        if !wait_for_default_input(&virtual_microphone.device_id) {
-            let _ = wasapi::set_default_device(&original_default_input.device_id);
-            let restore_id = original_output_device_id.as_deref().unwrap_or_default();
-            let _ = wasapi::set_app_output_device(pid, restore_id);
-            let _ = voicemeeter.apply(original_configuration.clone());
-            return Err("Windows 未确认默认麦克风切换，已恢复原设置。".to_string());
-        }
-
-        let session = SimpleRouteSession {
-            original_default_input_id: original_default_input.device_id.clone(),
-            virtual_microphone_id: virtual_microphone.device_id.clone(),
-            voicemeeter_input_id: voicemeeter_input.device_id.clone(),
-            original_voicemeeter_configuration: original_configuration.clone(),
-            physical_microphone_name: physical_microphone.name.clone(),
-            monitor_device_name: Some(monitor.name.clone()),
-            applications: vec![SimpleRouteApplication {
-                key,
-                display_name,
-                pid,
-                original_output_device_id: original_output_device_id.clone(),
-            }],
-        };
-        if let Err(error) = self.save_session(&session) {
-            let _ = wasapi::set_default_device(&original_default_input.device_id);
-            let restore_id = original_output_device_id.as_deref().unwrap_or_default();
-            let _ = wasapi::set_app_output_device(pid, restore_id);
-            let _ = voicemeeter.apply(original_configuration);
+            session.applications.pop();
             return Err(error);
         }
-        *guard = Some(session);
         self.recovery_pending.store(false, Ordering::Relaxed);
         self.status_with_guard(&guard)
     }
@@ -256,13 +197,6 @@ impl SimpleRouteManager {
         wasapi::set_app_output_device(pid, restore_id)
             .map_err(|error| format!("无法恢复应用原输出设备：{error:?}"))?;
 
-        if session.applications.len() == 1 {
-            restore_default_input(session)?;
-            *guard = None;
-            self.recovery_pending.store(false, Ordering::Relaxed);
-            self.remove_state_file()?;
-            return Ok(inactive_status());
-        }
         session.applications.remove(index);
         self.save_session(session)?;
         self.recovery_pending.store(false, Ordering::Relaxed);
@@ -310,7 +244,7 @@ impl SimpleRouteManager {
         Ok(status_from_session(session, false))
     }
 
-    pub fn stop_all(&self) -> Result<SimpleRouteStatus, String> {
+    pub fn stop_all(&self, voicemeeter: &VoicemeeterManager) -> Result<SimpleRouteStatus, String> {
         let mut guard = self
             .session
             .lock()
@@ -328,6 +262,9 @@ impl SimpleRouteManager {
             })?;
         }
         restore_default_input(session)?;
+        voicemeeter
+            .restore(session.original_voicemeeter_configuration.clone())
+            .map_err(|error| format!("无法恢复 VoiceMeeter 原配置：{error}"))?;
         *guard = None;
         self.recovery_pending.store(false, Ordering::Relaxed);
         self.remove_state_file()?;
@@ -362,6 +299,71 @@ impl SimpleRouteManager {
             .map(|session| status_from_session(session, false))
             .unwrap_or_else(inactive_status))
     }
+}
+
+fn create_prepared_session(voicemeeter: &VoicemeeterManager) -> Result<SimpleRouteSession, String> {
+    let vm_status = voicemeeter.status();
+    if !vm_status.connected {
+        return Err("VoiceMeeter 尚未运行或 Remote API 未连接。".to_string());
+    }
+    let original_configuration = vm_status
+        .configuration
+        .ok_or_else(|| "无法读取 VoiceMeeter 当前配置。".to_string())?;
+    let output_devices = wasapi::enumerate_devices(DeviceDirection::Output)
+        .map_err(|error| format!("无法读取输出设备：{error:?}"))?;
+    let input_devices = wasapi::enumerate_devices(DeviceDirection::Input)
+        .map_err(|error| format!("无法读取输入设备：{error:?}"))?;
+    let voicemeeter_input = find_main_voicemeeter_input(&output_devices)
+        .ok_or_else(|| "未检测到 VoiceMeeter Input 播放设备。".to_string())?;
+    let virtual_microphone = find_b1_virtual_microphone(&input_devices)
+        .ok_or_else(|| "未检测到 VoiceMeeter B1 虚拟麦克风。".to_string())?;
+    let original_default_input = input_devices
+        .iter()
+        .find(|device| device.is_default)
+        .ok_or_else(|| "未检测到 Windows 默认麦克风。".to_string())?;
+    let physical_microphone = find_physical_microphone(
+        &input_devices,
+        original_configuration.physical_input.device_name.as_deref(),
+    )
+    .ok_or_else(|| "未检测到可用的物理麦克风。".to_string())?;
+    let monitor = find_default_physical_output(&output_devices).ok_or_else(|| {
+        "未检测到 Windows 默认物理扬声器。请先在 Audio Hub 或 Windows 中将实际扬声器/耳机设为默认输出。"
+            .to_string()
+    })?;
+
+    let mut requested = original_configuration.clone();
+    requested.monitor_device_name = Some(monitor.name.clone());
+    requested.main_mix.monitor_enabled = true;
+    requested.main_mix.virtual_microphone_enabled = true;
+    requested.main_mix.input_muted = false;
+    requested.main_mix.virtual_microphone_muted = false;
+    requested.physical_input.device_name = Some(physical_microphone.name.clone());
+    requested.physical_input.muted = false;
+    requested.physical_input.monitor_enabled = false;
+    requested.physical_input.main_mix_enabled = true;
+
+    voicemeeter
+        .apply(requested)
+        .map_err(|error| format!("无法准备 VoiceMeeter 简易混音：{error}"))?;
+    if let Err(error) = wasapi::set_default_device(&virtual_microphone.device_id) {
+        let _ = voicemeeter.restore(original_configuration.clone());
+        return Err(format!("无法将虚拟麦克风设为默认设备：{error:?}"));
+    }
+    if !wait_for_default_input(&virtual_microphone.device_id) {
+        let _ = wasapi::set_default_device(&original_default_input.device_id);
+        let _ = voicemeeter.restore(original_configuration.clone());
+        return Err("Windows 未确认默认麦克风切换，已恢复原设置。".to_string());
+    }
+
+    Ok(SimpleRouteSession {
+        original_default_input_id: original_default_input.device_id.clone(),
+        virtual_microphone_id: virtual_microphone.device_id.clone(),
+        voicemeeter_input_id: voicemeeter_input.device_id.clone(),
+        original_voicemeeter_configuration: original_configuration,
+        physical_microphone_name: physical_microphone.name.clone(),
+        monitor_device_name: Some(monitor.name.clone()),
+        applications: Vec::new(),
+    })
 }
 
 fn restore_default_input(session: &SimpleRouteSession) -> Result<(), String> {

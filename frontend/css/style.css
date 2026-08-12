@@ -4,6 +4,8 @@
 
 /* ── 暗色主题（默认）────────────────────────────────── */
 :root {
+    color-scheme: dark;
+
     --bg-primary: #0f0f13;
     --bg-secondary: #16161e;
     --bg-card: #1c1c2a;
@@ -36,6 +38,8 @@
 
 /* ── 浅色主题 ──────────────────────────────────────── */
 :root.light {
+    color-scheme: light;
+
     --bg-primary: #f3f3f8;
     --bg-secondary: #fafafe;
     --bg-card: #ffffff;
@@ -58,6 +62,26 @@
 
 /* ── 全局 ──────────────────────────────────────────── */
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+button,
+input,
+select,
+textarea {
+    color: inherit;
+    font: inherit;
+}
+
+button {
+    -webkit-appearance: none;
+    appearance: none;
+    border: 0;
+    background: none;
+}
+
+input[type="checkbox"],
+input[type="range"] {
+    accent-color: var(--accent);
+}
 
 html, body {
     height: 100vh;
@@ -1245,6 +1269,85 @@ input[type="range"].drawer-volume-slider::-webkit-slider-thumb {
     cursor: wait;
 }
 
+.simple-route-notice-card {
+    width: min(440px, calc(100vw - 36px));
+    text-align: left;
+}
+
+.simple-route-notice-card h2,
+.simple-route-notice-card > .about-desc,
+.simple-route-notice-card > .simple-route-notice-once {
+    text-align: center;
+}
+
+.simple-route-notice-icon {
+    display: grid;
+    place-items: center;
+    width: 42px;
+    height: 42px;
+    margin: 0 auto 12px;
+    border: 1px solid var(--accent);
+    border-radius: 50%;
+    background: var(--accent-soft);
+    color: var(--accent-light);
+    font-size: 22px;
+}
+
+.simple-route-notice-details {
+    display: grid;
+    gap: 8px;
+    margin: 18px 0 12px;
+}
+
+.simple-route-notice-details > div {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+}
+
+.simple-route-notice-details span {
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.simple-route-notice-details strong {
+    color: var(--text-primary);
+    font-size: 12px;
+    text-align: right;
+}
+
+.simple-route-notice-warning {
+    margin-bottom: 18px;
+    padding: 12px 13px;
+    border-left: 3px solid var(--warning, #f59e0b);
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.65;
+}
+
+.simple-route-notice-warning strong {
+    color: var(--text-primary);
+}
+
+.simple-route-notice-card > .btn {
+    display: block;
+    min-width: 120px;
+    margin: 0 auto;
+}
+
+.simple-route-notice-once {
+    margin-top: 10px;
+    color: var(--text-muted);
+    font-size: 10px;
+}
+
 /* ── 通用开关 ──────────────────────────────────────── */
 .toggle-switch {
     position: relative;
@@ -1466,6 +1569,22 @@ input[type="range"].drawer-volume-slider::-webkit-slider-thumb {
 
 .eq-secondary-btn:active:not(:disabled) {
     background: var(--accent-glow);
+}
+
+.eq-primary-btn {
+    padding: 6px 14px;
+    border-radius: var(--radius-sm);
+    background: var(--accent);
+    color: white;
+    font-size: 13px;
+}
+
+.eq-primary-btn:hover:not(:disabled) {
+    background: var(--accent-light);
+}
+
+.eq-primary-btn:active:not(:disabled) {
+    transform: translateY(1px);
 }
 
 .device-select-field {
@@ -3360,12 +3479,21 @@ input[type="range"].drawer-volume-slider::-webkit-slider-thumb {
     accent-color: var(--accent);
 }
 
+.plugin-missing-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.plugin-attribution,
 .voicemeeter-attribution {
     color: var(--text-muted);
     font-size: 11px;
     line-height: 1.5;
 }
 
+.plugin-attribution a,
 .voicemeeter-attribution a {
     color: var(--accent-light);
 }

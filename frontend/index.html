@@ -141,7 +141,7 @@
     <div id="about-modal" class="about-modal hidden">
         <div class="about-card">
             <h2>🎧 Audio Hub</h2>
-            <p class="about-ver">v0.3.0</p>
+            <p class="about-ver">v0.3.1</p>
             <p class="about-desc">游戏玩家的音频控制中心</p>
             <div class="about-tech">
                 <span>Rust</span><span>Tauri 2</span><span>WASAPI</span>
@@ -186,17 +186,46 @@
                 点击右上角 X 时，希望 Audio Hub 怎么做？
             </p>
             <div class="close-behavior-options">
-                <button id="close-behavior-minimize-btn" class="btn" type="button">
+                <button id="close-behavior-minimize-btn" class="btn eq-primary-btn" type="button">
                     最小化到托盘
                 </button>
-                <button id="close-behavior-quit-btn" class="btn" type="button">
+                <button id="close-behavior-quit-btn" class="btn eq-secondary-btn" type="button">
                     退出程序
                 </button>
             </div>
             <p id="close-behavior-message" class="about-option-status"></p>
-            <button id="close-behavior-cancel-btn" class="btn btn-sm" type="button">
+            <button id="close-behavior-cancel-btn" class="btn eq-secondary-btn" type="button">
                 取消
             </button>
+        </div>
+    </div>
+
+    <!-- 简易模式首次待命说明 -->
+    <div id="simple-route-notice-modal" class="about-modal hidden">
+        <div class="about-card simple-route-notice-card" role="dialog" aria-modal="true"
+            aria-labelledby="simple-route-notice-title">
+            <div class="simple-route-notice-icon" aria-hidden="true">↝</div>
+            <h2 id="simple-route-notice-title">简易模式已待命</h2>
+            <p class="about-desc">
+                Audio Hub 已尝试把 Windows 默认麦克风切换为 VoiceMeeter B1，
+                现在可以先打开游戏或加入语音。
+            </p>
+            <div class="simple-route-notice-details">
+                <div>
+                    <span>默认虚拟麦克风</span>
+                    <strong id="simple-route-notice-virtual-mic">VoiceMeeter Out B1</strong>
+                </div>
+                <div>
+                    <span>当前物理麦克风</span>
+                    <strong id="simple-route-notice-physical-mic">当前设备</strong>
+                </div>
+            </div>
+            <p class="simple-route-notice-warning">
+                部分游戏、语音软件会记住自己的输入设备。若没有自动切换，请在该软件的音频设置中，
+                手动选择 <strong>VoiceMeeter Out B1</strong>（名称可能显示为 VoiceMeeter Output）。
+            </p>
+            <button id="simple-route-notice-close-btn" class="btn eq-primary-btn" type="button">我知道了</button>
+            <p class="simple-route-notice-once">此说明仅在首次启用简易模式时显示</p>
         </div>
     </div>
 

@@ -7,6 +7,9 @@ mod unfocused_mute;
 
 use audio::{
     device::{AudioDevice, AudioSession, DeviceDirection, DeviceVolumeState},
+    device_volume_follow::{
+        DeviceVolumeFollowManager, DeviceVolumeFollowStatus, DeviceVolumeSnapshot,
+    },
     notifications::{AudioNotificationWatcher, DEVICES_CHANGED_EVENT, SESSION_CHANGED_EVENT},
     process_loopback::{
         ProcessCaptureManager, ProcessCaptureResult, ProcessCaptureStatus, ProcessLoopbackSupport,
@@ -49,14 +52,58 @@ fn enumerate_sessions() -> Result<Vec<AudioSession>, String> {
 
 /// 设置指定 PID 应用的音量（0.0 ~ 1.0）。
 #[tauri::command]
-fn set_session_volume(pid: u32, volume: f32) -> Result<(), String> {
-    wasapi::set_session_volume(pid, volume).map_err(|e| format!("{:?}", e))
+fn set_session_volume(pid: u32, volume: f32, device_id: Option<String>) -> Result<(), String> {
+    match device_id.as_deref().filter(|value| !value.is_empty()) {
+        Some(device_id) => wasapi::set_session_volume_for_device(device_id, pid, volume),
+        None => wasapi::set_session_volume(pid, volume),
+    }
+    .map_err(|e| format!("{:?}", e))
 }
 
 /// 设置指定 PID 应用的静音状态。
 #[tauri::command]
-fn set_session_mute(pid: u32, muted: bool) -> Result<(), String> {
-    wasapi::set_session_mute(pid, muted).map_err(|e| format!("{:?}", e))
+fn set_session_mute(pid: u32, muted: bool, device_id: Option<String>) -> Result<(), String> {
+    match device_id.as_deref().filter(|value| !value.is_empty()) {
+        Some(device_id) => wasapi::set_session_mute_for_device(device_id, pid, muted),
+        None => wasapi::set_session_mute(pid, muted),
+    }
+    .map_err(|e| format!("{:?}", e))
+}
+
+#[tauri::command]
+fn get_device_volume_follow_status(
+    manager: tauri::State<'_, DeviceVolumeFollowManager>,
+) -> DeviceVolumeFollowStatus {
+    manager.status()
+}
+
+#[tauri::command]
+fn configure_device_volume_follow(
+    enabled: bool,
+    legacy_snapshots: Option<std::collections::HashMap<String, DeviceVolumeSnapshot>>,
+    manager: tauri::State<'_, DeviceVolumeFollowManager>,
+    unfocused_mute: tauri::State<'_, UnfocusedMuteManager>,
+) -> Result<DeviceVolumeFollowStatus, String> {
+    let auto_muted_keys = unfocused_mute
+        .status()
+        .auto_muted_keys
+        .into_iter()
+        .collect();
+    manager.configure(enabled, legacy_snapshots, &auto_muted_keys)
+}
+
+#[tauri::command]
+fn capture_device_volume_snapshot(
+    device_id: Option<String>,
+    manager: tauri::State<'_, DeviceVolumeFollowManager>,
+    unfocused_mute: tauri::State<'_, UnfocusedMuteManager>,
+) -> Result<(), String> {
+    let auto_muted_keys = unfocused_mute
+        .status()
+        .auto_muted_keys
+        .into_iter()
+        .collect();
+    manager.capture_device(device_id.as_deref(), &auto_muted_keys)
 }
 
 /// 获取指定输出或输入设备的 Windows 主音量。
@@ -357,6 +404,14 @@ fn simple_route_status(manager: tauri::State<'_, SimpleRouteManager>) -> SimpleR
 }
 
 #[tauri::command]
+fn prepare_simple_route(
+    manager: tauri::State<'_, SimpleRouteManager>,
+    voicemeeter: tauri::State<'_, VoicemeeterManager>,
+) -> Result<SimpleRouteStatus, String> {
+    manager.prepare(&voicemeeter)
+}
+
+#[tauri::command]
 fn enable_simple_route_application(
     pid: u32,
     key: String,
@@ -379,8 +434,9 @@ fn disable_simple_route_application(
 #[tauri::command]
 fn stop_all_simple_routes(
     manager: tauri::State<'_, SimpleRouteManager>,
+    voicemeeter: tauri::State<'_, VoicemeeterManager>,
 ) -> Result<SimpleRouteStatus, String> {
-    manager.stop_all()
+    manager.stop_all(&voicemeeter)
 }
 
 #[tauri::command]
@@ -388,7 +444,7 @@ fn shutdown_voicemeeter(
     manager: tauri::State<'_, VoicemeeterManager>,
     simple_route: tauri::State<'_, SimpleRouteManager>,
 ) -> Result<VoicemeeterStatus, String> {
-    simple_route.stop_all()?;
+    simple_route.stop_all(&manager)?;
     manager.shutdown()
 }
 
@@ -480,11 +536,16 @@ fn win_close(
     window: tauri::Window,
     capture_manager: tauri::State<'_, ProcessCaptureManager>,
     unfocused_mute_manager: tauri::State<'_, UnfocusedMuteManager>,
+    simple_route_manager: tauri::State<'_, SimpleRouteManager>,
+    voicemeeter_manager: tauri::State<'_, VoicemeeterManager>,
 ) {
     if capture_manager.status().active {
         let _ = capture_manager.stop();
     }
     unfocused_mute_manager.restore_all();
+    if let Err(error) = simple_route_manager.stop_all(&voicemeeter_manager) {
+        eprintln!("退出时恢复简易流转失败：{error}");
+    }
     let _ = window.close();
 }
 
@@ -583,8 +644,10 @@ fn apply_profile(name: String) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            tray::show_main_window(app);
+        }))
         .setup(|app| {
-            app.manage(AudioNotificationWatcher::start(app.handle().clone()));
             app.manage(ProcessCaptureManager::default());
             app.manage(VoicemeeterManager::default());
             app.manage(tray::TrayState::default());
@@ -593,10 +656,12 @@ pub fn run() {
                 .app_data_dir()
                 .map_err(|error| format!("无法确定简易流转配置目录：{error}"))?;
             app.manage(SimpleRouteManager::load(&app_data_dir));
+            app.manage(DeviceVolumeFollowManager::load(&app_data_dir));
             app.manage(UnfocusedMuteManager::start(
                 app.handle().clone(),
                 app_data_dir,
             ));
+            app.manage(AudioNotificationWatcher::start(app.handle().clone()));
 
             if let Err(error) = tray::build(app.handle()) {
                 eprintln!("系统托盘初始化失败，最小化将退回任务栏窗口：{error}");
@@ -622,6 +687,9 @@ pub fn run() {
             enumerate_sessions,
             set_session_volume,
             set_session_mute,
+            get_device_volume_follow_status,
+            configure_device_volume_follow,
+            capture_device_volume_snapshot,
             get_device_volume,
             set_device_volume,
             set_device_mute,
@@ -656,6 +724,7 @@ pub fn run() {
             apply_voicemeeter_configuration,
             open_voicemeeter_download,
             simple_route_status,
+            prepare_simple_route,
             enable_simple_route_application,
             disable_simple_route_application,
             stop_all_simple_routes,

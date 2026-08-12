@@ -15,8 +15,10 @@ use crate::audio::{
     device::DeviceDirection,
     notifications::{DEVICES_CHANGED_EVENT, SESSION_CHANGED_EVENT},
     process_loopback::ProcessCaptureManager,
+    simple_route::SimpleRouteManager,
     wasapi,
 };
+use crate::plugins::voicemeeter::VoicemeeterManager;
 use crate::unfocused_mute::{UNFOCUSED_MUTE_CHANGED_EVENT, UnfocusedMuteManager};
 
 const TRAY_ICON_ID: &str = "audio-hub-tray";
@@ -216,7 +218,7 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
     }
 }
 
-fn show_main_window(app: &AppHandle) {
+pub(crate) fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
@@ -259,5 +261,11 @@ fn quit(app: &AppHandle) {
         let _ = capture.stop();
     }
     app.state::<UnfocusedMuteManager>().restore_all();
+    if let Err(error) = app
+        .state::<SimpleRouteManager>()
+        .stop_all(&app.state::<VoicemeeterManager>())
+    {
+        eprintln!("退出时恢复简易流转失败：{error}");
+    }
     app.exit(0);
 }

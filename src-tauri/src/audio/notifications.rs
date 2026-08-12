@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use windows::{
     Win32::{
         Foundation::PROPERTYKEY,
@@ -24,6 +24,10 @@ use windows::{
     },
     core::{BOOL, GUID, PCWSTR, Ref, implement},
 };
+
+use crate::unfocused_mute::UnfocusedMuteManager;
+
+use super::device_volume_follow::{DEVICE_VOLUME_FOLLOW_EVENT, DeviceVolumeFollowManager};
 
 pub const AUDIO_HUB_EVENT_CONTEXT: GUID = GUID::from_u128(0x5635c1bd_20b7_4e34_a606_57e8b802bcaf);
 
@@ -368,12 +372,12 @@ fn watcher_thread(
 ) {
     let Ok(_apartment) = ComApartment::initialize() else {
         eprintln!("音频通知监听器初始化 COM 失败，将使用轮询降级");
-        let _ = ready_tx.try_send(false);
+        fallback_watcher_loop(app, rx, available, ready_tx);
         return;
     };
     let Ok(mut registrations) = AudioRegistrations::new(tx) else {
         eprintln!("注册 Windows 音频通知失败，将使用轮询降级");
-        let _ = ready_tx.try_send(false);
+        fallback_watcher_loop(app, rx, available, ready_tx);
         return;
     };
 
@@ -387,6 +391,7 @@ fn watcher_thread(
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 // 低频重建用于处理驱动漏报和端点内部重置。
                 let _ = registrations.rebuild_managers();
+                apply_device_volume_follow(&app);
                 let _ = app.emit(DEVICES_CHANGED_EVENT, ());
                 let _ = app.emit(SESSION_CHANGED_EVENT, ());
                 continue;
@@ -434,13 +439,21 @@ fn watcher_thread(
             // 给驱动短暂时间完成端点状态切换，再重新绑定全部监听。
             thread::sleep(Duration::from_millis(100));
             let _ = registrations.rebuild_managers();
+            apply_device_volume_follow(&app);
             let _ = app.emit(DEVICES_CHANGED_EVENT, ());
             let _ = app.emit(SESSION_CHANGED_EVENT, ());
         } else {
             if topology_changed {
                 registrations.rebuild_session_events();
+                if let Err(error) = app
+                    .state::<DeviceVolumeFollowManager>()
+                    .apply_current_snapshot()
+                {
+                    eprintln!("新音频会话恢复扬声器快照失败：{error}");
+                }
             }
             if topology_changed || session_changed {
+                capture_device_volume_snapshot(&app);
                 let _ = app.emit(SESSION_CHANGED_EVENT, ());
             }
         }
@@ -448,4 +461,57 @@ fn watcher_thread(
 
     available.store(false, Ordering::Release);
     drop(registrations);
+}
+
+fn fallback_watcher_loop(
+    app: AppHandle,
+    rx: Receiver<WatchSignal>,
+    available: Arc<AtomicBool>,
+    ready_tx: SyncSender<bool>,
+) {
+    available.store(false, Ordering::Release);
+    let _ = ready_tx.try_send(false);
+    loop {
+        match rx.recv_timeout(Duration::from_secs(3)) {
+            Ok(WatchSignal::Shutdown) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                break;
+            }
+            Ok(_) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                apply_device_volume_follow(&app);
+                capture_device_volume_snapshot(&app);
+                let _ = app.emit(DEVICES_CHANGED_EVENT, ());
+                let _ = app.emit(SESSION_CHANGED_EVENT, ());
+            }
+        }
+    }
+}
+
+fn auto_muted_keys(app: &AppHandle) -> std::collections::HashSet<String> {
+    app.state::<UnfocusedMuteManager>()
+        .status()
+        .auto_muted_keys
+        .into_iter()
+        .collect()
+}
+
+fn capture_device_volume_snapshot(app: &AppHandle) {
+    if let Err(error) = app
+        .state::<DeviceVolumeFollowManager>()
+        .capture_current(&auto_muted_keys(app))
+    {
+        eprintln!("保存默认扬声器应用音量失败：{error}");
+    }
+}
+
+fn apply_device_volume_follow(app: &AppHandle) {
+    match app
+        .state::<DeviceVolumeFollowManager>()
+        .handle_default_output_change(&auto_muted_keys(app))
+    {
+        Ok(Some(result)) => {
+            let _ = app.emit(DEVICE_VOLUME_FOLLOW_EVENT, result);
+        }
+        Ok(None) => {}
+        Err(error) => eprintln!("默认扬声器变化后恢复应用音量失败：{error}"),
+    }
 }

@@ -394,6 +394,7 @@ mod tests {
         let session = AudioSession {
             display_name: "Example Player".to_string(),
             process_name: Some("player-core.exe".to_string()),
+            device_id: "device".to_string(),
             pid: 42,
             volume: 0.8,
             muted: false,

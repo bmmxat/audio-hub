@@ -44,6 +44,9 @@ pub struct AudioSession {
     /// ToolHelp 快照读取到的实际进程名，用于需要与前台窗口匹配的功能。
     #[serde(default)]
     pub process_name: Option<String>,
+    /// 此会话所属的输出端点 ID。
+    #[serde(default)]
+    pub device_id: String,
     /// 进程 ID
     pub pid: u32,
     /// 音量（0.0 ~ 1.0）
